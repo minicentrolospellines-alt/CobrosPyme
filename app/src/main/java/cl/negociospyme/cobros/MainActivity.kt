@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1930,38 +1929,27 @@ private fun sendWhatsAppReminder(
     val paymentData = buildPaymentData(business)
 
     val message = buildString {
-        append("Hola ${client.name} 👋
-
-")
-        append("${business.name}
-")
-        append("$intro
-
-")
-        if (debt.concept.isNotBlank()) append("Concepto: ${debt.concept}
-")
-        append("Monto original: ${formatCurrency(debt.amount)}
-")
+        append("Hola ${client.name} 👋\\n\\n")
+        append("${business.name}\\n")
+        append("$intro\\n\\n")
+        if (debt.concept.isNotBlank()) {
+            append("Concepto: ${debt.concept}\\n")
+        }
+        append("Monto original: ${formatCurrency(debt.amount)}\\n")
         if (debt.paidAmount > 0) {
-            append("Abonado: ${formatCurrency(debt.paidAmount.coerceAtMost(debt.amount))}
-")
+            append("Abonado: ${formatCurrency(debt.paidAmount.coerceAtMost(debt.amount))}\\n")
         }
-        append("Saldo pendiente: ${formatCurrency(balance)}
-")
-        if (debt.dueDate.isNotBlank()) append("Vencimiento: ${debt.dueDate}
-")
-        append("Estado: $status
-")
+        append("Saldo pendiente: ${formatCurrency(balance)}\\n")
+        if (debt.dueDate.isNotBlank()) {
+            append("Vencimiento: ${debt.dueDate}\\n")
+        }
+        append("Estado: $status\\n")
         if (paymentData.isNotBlank()) {
-            append("
-Datos de pago:
-")
+            append("\\nDatos de pago:\\n")
             append(paymentData)
-            append("
-")
+            append("\\n")
         }
-        append("
-Si ya realizaste el pago, puedes ignorar este mensaje. Gracias.")
+        append("\\nSi ya realizaste el pago, puedes ignorar este mensaje. Gracias.")
     }
 
     openWhatsApp(context, phone, message)
@@ -1973,8 +1961,7 @@ private fun sendWhatsAppClient(
     business: BusinessSettings
 ) {
     val phone = normalizePhone(client.phone)
-    val message = "Hola ${client.name} 👋
-Te escribimos de ${business.name}."
+    val message = "Hola ${client.name} 👋\\nTe escribimos de ${business.name}."
     openWhatsApp(context, phone, message)
 }
 
@@ -1989,18 +1976,12 @@ private fun openWhatsApp(context: Context, phone: String, message: String) {
 
 private fun buildPaymentData(business: BusinessSettings): String {
     return buildString {
-        if (business.bank.isNotBlank()) append("Banco: ${business.bank}
-")
-        if (business.accountType.isNotBlank()) append("Cuenta: ${business.accountType}
-")
-        if (business.accountNumber.isNotBlank()) append("N°: ${business.accountNumber}
-")
-        if (business.holder.isNotBlank()) append("Titular: ${business.holder}
-")
-        if (business.rut.isNotBlank()) append("RUT: ${business.rut}
-")
-        if (business.paymentNotes.isNotBlank()) append("${business.paymentNotes}
-")
+        if (business.bank.isNotBlank()) append("Banco: ${business.bank}\\n")
+        if (business.accountType.isNotBlank()) append("Cuenta: ${business.accountType}\\n")
+        if (business.accountNumber.isNotBlank()) append("N°: ${business.accountNumber}\\n")
+        if (business.holder.isNotBlank()) append("Titular: ${business.holder}\\n")
+        if (business.rut.isNotBlank()) append("RUT: ${business.rut}\\n")
+        if (business.paymentNotes.isNotBlank()) append("${business.paymentNotes}\\n")
     }.trim()
 }
 
@@ -2015,19 +1996,12 @@ private fun shareClientSummary(
     val overdue = debts.count { debtStatus(it) == "Vencido" }
 
     val text = buildString {
-        append("${business.name}
-")
-        append("Resumen de cuenta - ${client.name}
-
-")
-        append("Pendiente: ${formatCurrency(pending)}
-")
-        append("Pagado: ${formatCurrency(collected)}
-")
-        append("Cobros vencidos: $overdue
-")
-        append("Total de cobros: ${debts.size}
-")
+        append("${business.name}\\n")
+        append("Resumen de cuenta - ${client.name}\\n\\n")
+        append("Pendiente: ${formatCurrency(pending)}\\n")
+        append("Pagado: ${formatCurrency(collected)}\\n")
+        append("Cobros vencidos: $overdue\\n")
+        append("Total de cobros: ${debts.size}\\n")
     }
 
     shareText(context, "Resumen de ${client.name}", text)
@@ -2041,34 +2015,25 @@ private fun sharePaymentReceipt(
     paymentAmount: Long
 ) {
     val text = buildString {
-        append("${business.name}
-")
-        append("COMPROBANTE DE ABONO
-")
-        append("--------------------------------
-")
-        append("Fecha: ${currentDate()}
-")
-        append("Cliente: ${client?.name ?: "Cliente"}
-")
-        if (debt.concept.isNotBlank()) append("Concepto: ${debt.concept}
-")
-        append("Abono recibido: ${formatCurrency(paymentAmount)}
-")
-        append("Total original: ${formatCurrency(debt.amount)}
-")
-        append("Saldo pendiente: ${formatCurrency(remainingBalance(debt))}
-")
-        append("Estado: ${debtStatus(debt)}
-")
-        append("--------------------------------
-")
+        append("${business.name}\\n")
+        append("COMPROBANTE DE ABONO\\n")
+        append("--------------------------------\\n")
+        append("Fecha: ${currentDate()}\\n")
+        append("Cliente: ${client?.name ?: "Cliente"}\\n")
+        if (debt.concept.isNotBlank()) {
+            append("Concepto: ${debt.concept}\\n")
+        }
+        append("Abono recibido: ${formatCurrency(paymentAmount)}\\n")
+        append("Total original: ${formatCurrency(debt.amount)}\\n")
+        append("Saldo pendiente: ${formatCurrency(remainingBalance(debt))}\\n")
+        append("Estado: ${debtStatus(debt)}\\n")
+        append("--------------------------------\\n")
         if (business.whatsapp.isNotBlank()) {
-            append("Contacto: ${business.whatsapp}
-")
+            append("Contacto: ${business.whatsapp}\\n")
         }
         append("Comprobante generado por CobrosPyme")
     }
+
     shareText(context, "Comprobante de abono", text)
 }
 
