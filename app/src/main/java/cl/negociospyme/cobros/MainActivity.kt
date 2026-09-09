@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,11 +57,16 @@ import java.util.Locale
 private const val PREFS = "cobrospyme_data"
 private const val KEY_CLIENTS = "clients"
 private const val KEY_DEBTS = "debts"
+private const val KEY_PAYMENTS = "payments"
+private const val APP_VERSION_LABEL = "v1.2"
 
 data class Client(
     val id: Long,
     val name: String,
-    val phone: String
+    val phone: String,
+    val email: String = "",
+    val address: String = "",
+    val notes: String = ""
 )
 
 data class Debt(
@@ -67,6 +77,13 @@ data class Debt(
     val paidAmount: Long,
     val dueDate: String,
     val paid: Boolean
+)
+
+data class PaymentRecord(
+    val id: Long,
+    val debtId: Long,
+    val amount: Long,
+    val date: String
 )
 
 enum class Screen {
@@ -101,11 +118,17 @@ fun CobrosPymeApp() {
     val debts = remember {
         mutableStateListOf<Debt>().apply { addAll(loadDebts(context)) }
     }
+    val payments = remember {
+        mutableStateListOf<PaymentRecord>().apply { addAll(loadPayments(context)) }
+    }
 
     var screen by remember { mutableStateOf(Screen.HOME) }
     var showClientDialog by remember { mutableStateOf(false) }
+    var editingClient by remember { mutableStateOf<Client?>(null) }
     var showDebtDialog by remember { mutableStateOf(false) }
     var paymentDebt by remember { mutableStateOf<Debt?>(null) }
+    var selectedClient by remember { mutableStateOf<Client?>(null) }
+    var selectedDebt by remember { mutableStateOf<Debt?>(null) }
 
     Scaffold(
         bottomBar = {
@@ -125,14 +148,16 @@ fun CobrosPymeApp() {
                     if (clients.isEmpty()) showClientDialog = true else showDebtDialog = true
                 },
                 onOpenClients = { screen = Screen.CLIENTS },
-                onOpenDebts = { screen = Screen.DEBTS }
+                onOpenDebts = { screen = Screen.DEBTS },
+                onOpenDebt = { selectedDebt = it }
             )
 
             Screen.CLIENTS -> ClientsScreen(
                 modifier = Modifier.padding(innerPadding),
                 clients = clients,
                 debts = debts,
-                onNewClient = { showClientDialog = true }
+                onNewClient = { showClientDialog = true },
+                onOpenClient = { selectedClient = it }
             )
 
             Screen.DEBTS -> DebtsScreen(
@@ -146,34 +171,75 @@ fun CobrosPymeApp() {
                 onPaid = { debt ->
                     val index = debts.indexOfFirst { it.id == debt.id }
                     if (index >= 0) {
+                        val balanceBefore = remainingBalance(debt)
                         debts[index] = debt.copy(
                             paidAmount = debt.amount,
                             paid = true
                         )
                         saveDebts(context, debts)
+                        if (balanceBefore > 0) {
+                            payments.add(
+                                PaymentRecord(
+                                    id = System.currentTimeMillis(),
+                                    debtId = debt.id,
+                                    amount = balanceBefore,
+                                    date = currentDate()
+                                )
+                            )
+                            savePayments(context, payments)
+                        }
                     }
                 },
                 onWhatsApp = { debt ->
                     val client = clients.firstOrNull { it.id == debt.clientId }
                     if (client != null) sendWhatsAppReminder(context, client, debt)
-                }
+                },
+                onOpenDebt = { selectedDebt = it }
             )
         }
     }
 
     if (showClientDialog) {
-        NewClientDialog(
+        ClientDialog(
+            title = "Nuevo cliente",
+            initial = null,
             onDismiss = { showClientDialog = false },
-            onSave = { name, phone ->
+            onSave = { name, phone, email, address, notes ->
                 clients.add(
                     Client(
                         id = System.currentTimeMillis(),
                         name = name.trim(),
-                        phone = phone.trim()
+                        phone = phone.trim(),
+                        email = email.trim(),
+                        address = address.trim(),
+                        notes = notes.trim()
                     )
                 )
                 saveClients(context, clients)
                 showClientDialog = false
+            }
+        )
+    }
+
+    editingClient?.let { client ->
+        ClientDialog(
+            title = "Editar cliente",
+            initial = client,
+            onDismiss = { editingClient = null },
+            onSave = { name, phone, email, address, notes ->
+                val index = clients.indexOfFirst { it.id == client.id }
+                if (index >= 0) {
+                    clients[index] = client.copy(
+                        name = name.trim(),
+                        phone = phone.trim(),
+                        email = email.trim(),
+                        address = address.trim(),
+                        notes = notes.trim()
+                    )
+                    saveClients(context, clients)
+                    selectedClient = clients[index]
+                }
+                editingClient = null
             }
         )
     }
@@ -207,15 +273,67 @@ fun CobrosPymeApp() {
             onSave = { payment ->
                 val index = debts.indexOfFirst { it.id == debt.id }
                 if (index >= 0) {
-                    val newPaidAmount = (debt.paidAmount + payment).coerceAtMost(debt.amount)
+                    val adjustedPayment = payment.coerceAtMost(remainingBalance(debt))
+                    val newPaidAmount = (debt.paidAmount + adjustedPayment).coerceAtMost(debt.amount)
                     val isPaid = newPaidAmount >= debt.amount
                     debts[index] = debt.copy(
                         paidAmount = newPaidAmount,
                         paid = isPaid
                     )
                     saveDebts(context, debts)
+
+                    if (adjustedPayment > 0) {
+                        payments.add(
+                            PaymentRecord(
+                                id = System.currentTimeMillis(),
+                                debtId = debt.id,
+                                amount = adjustedPayment,
+                                date = currentDate()
+                            )
+                        )
+                        savePayments(context, payments)
+                    }
                 }
                 paymentDebt = null
+            }
+        )
+    }
+
+    selectedClient?.let { client ->
+        ClientDetailDialog(
+            client = client,
+            debts = debts.filter { it.clientId == client.id },
+            payments = payments,
+            onDismiss = { selectedClient = null },
+            onEdit = { editingClient = client },
+            onWhatsApp = { sendWhatsAppClient(context, client) },
+            onShareSummary = {
+                shareClientSummary(
+                    context = context,
+                    client = client,
+                    debts = debts.filter { it.clientId == client.id }
+                )
+            },
+            onOpenDebt = {
+                selectedDebt = it
+                selectedClient = null
+            }
+        )
+    }
+
+    selectedDebt?.let { debt ->
+        val client = clients.firstOrNull { it.id == debt.clientId }
+        DebtDetailDialog(
+            debt = debt,
+            client = client,
+            payments = payments.filter { it.debtId == debt.id },
+            onDismiss = { selectedDebt = null },
+            onPayment = {
+                paymentDebt = debt
+                selectedDebt = null
+            },
+            onWhatsApp = {
+                if (client != null) sendWhatsAppReminder(context, client, debt)
             }
         )
     }
@@ -226,15 +344,17 @@ private fun BottomMenu(
     current: Screen,
     onChange: (Screen) -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
+    Surface(
+        tonalElevation = 6.dp,
+        shadowElevation = 8.dp
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             MenuButton("Inicio", current == Screen.HOME) { onChange(Screen.HOME) }
             MenuButton("Clientes", current == Screen.CLIENTS) { onChange(Screen.CLIENTS) }
@@ -250,7 +370,12 @@ private fun MenuButton(
     onClick: () -> Unit
 ) {
     if (selected) {
-        Button(onClick = onClick) { Text(text) }
+        Button(
+            onClick = onClick,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Text(text)
+        }
     } else {
         TextButton(onClick = onClick) { Text(text) }
     }
@@ -264,7 +389,8 @@ private fun HomeScreen(
     onNewClient: () -> Unit,
     onNewDebt: () -> Unit,
     onOpenClients: () -> Unit,
-    onOpenDebts: () -> Unit
+    onOpenDebts: () -> Unit,
+    onOpenDebt: (Debt) -> Unit
 ) {
     val totalPending = debts.sumOf { remainingBalance(it) }
     val totalCollected = debts.sumOf { it.paidAmount.coerceAtMost(it.amount) }
@@ -278,16 +404,28 @@ private fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text(
-                text = "CobrosPyme",
-                fontSize = 30.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "Controla clientes, deudas y abonos",
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column {
+                    Text(
+                        text = "CobrosPyme",
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Controla clientes, deudas y abonos",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = APP_VERSION_LABEL,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
 
         item {
@@ -296,23 +434,27 @@ private fun HomeScreen(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
-                shape = RoundedCornerShape(18.dp)
+                shape = RoundedCornerShape(20.dp)
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text("Total por cobrar")
                     Text(
                         text = formatCurrency(totalPending),
-                        fontSize = 34.sp,
+                        fontSize = 36.sp,
                         fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Cobrado acumulado: ${formatCurrency(totalCollected)}",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
             }
         }
 
-        item { SummaryCard("Cobrado", formatCurrency(totalCollected)) }
-        item { SummaryCard("Cobros vencidos", overdue.toString()) }
-        item { SummaryCard("Próximos / pendientes", upcoming.toString()) }
-        item { SummaryCard("Clientes registrados", clients.size.toString()) }
+        item { SummaryCard("Cobros vencidos", overdue.toString(), StatusType.OVERDUE) }
+        item { SummaryCard("Próximos / pendientes", upcoming.toString(), StatusType.PENDING) }
+        item { SummaryCard("Clientes registrados", clients.size.toString(), StatusType.NEUTRAL) }
 
         item {
             Button(
@@ -362,7 +504,8 @@ private fun HomeScreen(
                 DebtCard(
                     clientName = client?.name ?: "Cliente",
                     debt = debt,
-                    showActions = false
+                    showActions = false,
+                    onOpen = { onOpenDebt(debt) }
                 )
             }
         }
@@ -375,15 +518,31 @@ private fun HomeScreen(
     }
 }
 
+enum class StatusType { OVERDUE, PENDING, PAID, NEUTRAL }
+
 @Composable
-private fun SummaryCard(title: String, value: String) {
+private fun SummaryCard(title: String, value: String, type: StatusType) {
+    val stripe = when (type) {
+        StatusType.OVERDUE -> Color(0xFFC62828)
+        StatusType.PENDING -> Color(0xFFEF6C00)
+        StatusType.PAID -> Color(0xFF2E7D32)
+        StatusType.NEUTRAL -> MaterialTheme.colorScheme.primary
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .background(stripe)
+                    .padding(horizontal = 3.dp, vertical = 34.dp)
+            )
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(title, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(value, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
@@ -393,8 +552,16 @@ private fun ClientsScreen(
     modifier: Modifier,
     clients: List<Client>,
     debts: List<Debt>,
-    onNewClient: () -> Unit
+    onNewClient: () -> Unit,
+    onOpenClient: (Client) -> Unit
 ) {
+    var query by remember { mutableStateOf("") }
+    val filtered = clients.filter {
+        query.isBlank() ||
+            it.name.contains(query, ignoreCase = true) ||
+            it.phone.contains(query, ignoreCase = true)
+    }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -404,6 +571,15 @@ private fun ClientsScreen(
         item {
             Text("Clientes", fontSize = 28.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Buscar cliente") },
+                placeholder = { Text("Nombre o teléfono") },
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = onNewClient,
                 modifier = Modifier.fillMaxWidth()
@@ -412,22 +588,37 @@ private fun ClientsScreen(
             }
         }
 
-        if (clients.isEmpty()) {
+        if (filtered.isEmpty()) {
             item {
-                EmptyCard("Sin clientes", "Registra tu primer cliente para comenzar.")
+                EmptyCard(
+                    if (query.isBlank()) "Sin clientes" else "Sin resultados",
+                    if (query.isBlank()) "Registra tu primer cliente para comenzar." else "No encontramos clientes con esa búsqueda."
+                )
             }
         } else {
-            items(clients.sortedBy { it.name.lowercase() }, key = { it.id }) { client ->
+            items(filtered.sortedBy { it.name.lowercase() }, key = { it.id }) { client ->
                 val clientDebts = debts.filter { it.clientId == client.id }
                 val pending = clientDebts.sumOf { remainingBalance(it) }
                 val collected = clientDebts.sumOf { it.paidAmount.coerceAtMost(it.amount) }
 
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenClient(client) },
+                    shape = RoundedCornerShape(16.dp)
+                ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text(client.name, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(client.name, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text("Ver ficha", color = MaterialTheme.colorScheme.primary)
+                        }
                         Text(client.phone.ifBlank { "Sin teléfono" })
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("Pendiente: ${formatCurrency(pending)}")
+                        Text("Pendiente: ${formatCurrency(pending)}", fontWeight = FontWeight.Bold)
                         Text("Pagado: ${formatCurrency(collected)}")
                         Text("Cobros: ${clientDebts.size}")
                     }
@@ -445,18 +636,25 @@ private fun DebtsScreen(
     onNewDebt: () -> Unit,
     onPayment: (Debt) -> Unit,
     onPaid: (Debt) -> Unit,
-    onWhatsApp: (Debt) -> Unit
+    onWhatsApp: (Debt) -> Unit,
+    onOpenDebt: (Debt) -> Unit
 ) {
     var filter by remember { mutableStateOf(DebtFilter.ALL) }
     var filterMenu by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
 
     val filteredDebts = debts.filter { debt ->
-        when (filter) {
+        val statusMatches = when (filter) {
             DebtFilter.ALL -> true
             DebtFilter.PENDING -> debtStatus(debt) == "Pendiente"
             DebtFilter.OVERDUE -> debtStatus(debt) == "Vencido"
             DebtFilter.PAID -> debtStatus(debt) == "Pagado"
         }
+        val client = clients.firstOrNull { it.id == debt.clientId }
+        val textMatches = query.isBlank() ||
+            debt.concept.contains(query, ignoreCase = true) ||
+            client?.name?.contains(query, ignoreCase = true) == true
+        statusMatches && textMatches
     }
 
     LazyColumn(
@@ -467,6 +665,15 @@ private fun DebtsScreen(
     ) {
         item {
             Text("Cobros", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Buscar cobro") },
+                placeholder = { Text("Cliente o concepto") },
+                singleLine = true
+            )
             Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = onNewDebt,
@@ -501,7 +708,7 @@ private fun DebtsScreen(
 
         if (filteredDebts.isEmpty()) {
             item {
-                EmptyCard("Sin cobros", "No hay cobros para este filtro.")
+                EmptyCard("Sin cobros", "No hay cobros para este filtro o búsqueda.")
             }
         } else {
             items(filteredDebts.sortedByDescending { it.id }, key = { it.id }) { debt ->
@@ -512,7 +719,8 @@ private fun DebtsScreen(
                     showActions = true,
                     onPayment = { onPayment(debt) },
                     onPaid = { onPaid(debt) },
-                    onWhatsApp = { onWhatsApp(debt) }
+                    onWhatsApp = { onWhatsApp(debt) },
+                    onOpen = { onOpenDebt(debt) }
                 )
             }
         }
@@ -526,29 +734,43 @@ private fun DebtCard(
     showActions: Boolean,
     onPayment: () -> Unit = {},
     onPaid: () -> Unit = {},
-    onWhatsApp: () -> Unit = {}
+    onWhatsApp: () -> Unit = {},
+    onOpen: () -> Unit = {}
 ) {
     val balance = remainingBalance(debt)
     val status = debtStatus(debt)
 
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen() },
+        shape = RoundedCornerShape(16.dp)
+    ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(clientName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(clientName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                StatusBadge(status)
+            }
             Text(debt.concept.ifBlank { "Cobro" })
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 "Total: ${formatCurrency(debt.amount)}",
-                fontSize = 18.sp,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.Bold
             )
-            Text("Abonado: ${formatCurrency(debt.paidAmount.coerceAtMost(debt.amount))}")
+            if (debt.paidAmount > 0) {
+                Text("Abonado: ${formatCurrency(debt.paidAmount.coerceAtMost(debt.amount))}")
+            }
             Text(
                 "Saldo: ${formatCurrency(balance)}",
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )
             Text("Vence: ${debt.dueDate.ifBlank { "Sin fecha" }}")
-            Text("Estado: $status", fontWeight = FontWeight.Bold)
 
             if (showActions && status != "Pagado") {
                 Spacer(modifier = Modifier.height(10.dp))
@@ -563,9 +785,9 @@ private fun DebtCard(
                     onClick = onWhatsApp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Enviar recordatorio por WhatsApp")
+                    Text("WhatsApp")
                 }
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 TextButton(
                     onClick = onPaid,
                     modifier = Modifier.fillMaxWidth()
@@ -573,6 +795,180 @@ private fun DebtCard(
                     Text("Marcar saldo completo como pagado")
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun StatusBadge(status: String) {
+    val background = when (status) {
+        "Vencido" -> Color(0xFFFFE5E5)
+        "Pagado" -> Color(0xFFE4F5E7)
+        else -> Color(0xFFFFF0D9)
+    }
+    val foreground = when (status) {
+        "Vencido" -> Color(0xFFB71C1C)
+        "Pagado" -> Color(0xFF1B5E20)
+        else -> Color(0xFFE65100)
+    }
+
+    Surface(
+        color = background,
+        shape = RoundedCornerShape(50)
+    ) {
+        Text(
+            text = status,
+            color = foreground,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+        )
+    }
+}
+
+@Composable
+private fun ClientDetailDialog(
+    client: Client,
+    debts: List<Debt>,
+    payments: List<PaymentRecord>,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onWhatsApp: () -> Unit,
+    onShareSummary: () -> Unit,
+    onOpenDebt: (Debt) -> Unit
+) {
+    val pending = debts.sumOf { remainingBalance(it) }
+    val collected = debts.sumOf { it.paidAmount.coerceAtMost(it.amount) }
+    val overdue = debts.count { debtStatus(it) == "Vencido" }
+    val paymentCount = payments.count { payment -> debts.any { it.id == payment.debtId } }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(client.name) },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                item {
+                    Text(client.phone.ifBlank { "Sin teléfono" })
+                    if (client.email.isNotBlank()) Text(client.email)
+                    if (client.address.isNotBlank()) Text(client.address)
+                    if (client.notes.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Notas: ${client.notes}")
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Pendiente: ${formatCurrency(pending)}", fontWeight = FontWeight.Bold)
+                    Text("Pagado: ${formatCurrency(collected)}")
+                    Text("Vencidos: $overdue")
+                    Text("Abonos registrados: $paymentCount")
+                }
+
+                if (debts.isNotEmpty()) {
+                    item {
+                        Text("Historial de cobros", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    }
+                    items(debts.sortedByDescending { it.id }, key = { it.id }) { debt ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpenDebt(debt) }
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(debt.concept.ifBlank { "Cobro" }, fontWeight = FontWeight.Bold)
+                                Text("Saldo: ${formatCurrency(remainingBalance(debt))}")
+                                Text("Estado: ${debtStatus(debt)}")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cerrar") }
+        },
+        dismissButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton(onClick = onEdit) { Text("Editar") }
+                TextButton(onClick = onWhatsApp) { Text("WhatsApp") }
+                TextButton(onClick = onShareSummary) { Text("Compartir resumen") }
+            }
+        }
+    )
+}
+
+@Composable
+private fun DebtDetailDialog(
+    debt: Debt,
+    client: Client?,
+    payments: List<PaymentRecord>,
+    onDismiss: () -> Unit,
+    onPayment: () -> Unit,
+    onWhatsApp: () -> Unit
+) {
+    val recorded = payments.sumOf { it.amount }
+    val legacyPaid = (debt.paidAmount - recorded).coerceAtLeast(0L)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(debt.concept.ifBlank { "Detalle del cobro" }) },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    Text(client?.name ?: "Cliente", fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    StatusBadge(debtStatus(debt))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Total: ${formatCurrency(debt.amount)}")
+                    Text("Abonado: ${formatCurrency(debt.paidAmount)}")
+                    Text("Saldo: ${formatCurrency(remainingBalance(debt))}", fontWeight = FontWeight.Bold)
+                    Text("Vence: ${debt.dueDate.ifBlank { "Sin fecha" }}")
+                }
+
+                if (legacyPaid > 0 || payments.isNotEmpty()) {
+                    item { Text("Historial de abonos", fontWeight = FontWeight.Bold, fontSize = 17.sp) }
+                    if (legacyPaid > 0) {
+                        item {
+                            PaymentRow(
+                                label = "Abono anterior",
+                                amount = legacyPaid
+                            )
+                        }
+                    }
+                    items(payments.sortedByDescending { it.id }, key = { it.id }) { payment ->
+                        PaymentRow(
+                            label = payment.date,
+                            amount = payment.amount
+                        )
+                    }
+                } else {
+                    item { Text("Aún no hay abonos registrados.") }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cerrar") }
+        },
+        dismissButton = {
+            if (debtStatus(debt) != "Pagado") {
+                Column(horizontalAlignment = Alignment.End) {
+                    TextButton(onClick = onPayment) { Text("Registrar abono") }
+                    TextButton(onClick = onWhatsApp) { Text("WhatsApp") }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun PaymentRow(label: String, amount: Long) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label)
+            Text(formatCurrency(amount), fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -594,36 +990,68 @@ private fun EmptyCard(title: String, subtitle: String) {
 }
 
 @Composable
-private fun NewClientDialog(
+private fun ClientDialog(
+    title: String,
+    initial: Client?,
     onDismiss: () -> Unit,
-    onSave: (String, String) -> Unit
+    onSave: (String, String, String, String, String) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
+    var name by remember(initial?.id) { mutableStateOf(initial?.name ?: "") }
+    var phone by remember(initial?.id) { mutableStateOf(initial?.phone ?: "") }
+    var email by remember(initial?.id) { mutableStateOf(initial?.email ?: "") }
+    var address by remember(initial?.id) { mutableStateOf(initial?.address ?: "") }
+    var notes by remember(initial?.id) { mutableStateOf(initial?.notes ?: "") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Nuevo cliente") },
+        title = { Text(title) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Nombre") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = { phone = it },
-                    label = { Text("WhatsApp / teléfono") },
-                    placeholder = { Text("Ej: 56912345678") },
-                    singleLine = true
-                )
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                item {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Nombre") },
+                        singleLine = true
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = it },
+                        label = { Text("WhatsApp / teléfono") },
+                        placeholder = { Text("Ej: 56912345678") },
+                        singleLine = true
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = { email = it },
+                        label = { Text("Correo (opcional)") },
+                        singleLine = true
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = address,
+                        onValueChange = { address = it },
+                        label = { Text("Dirección (opcional)") },
+                        singleLine = true
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = notes,
+                        onValueChange = { notes = it },
+                        label = { Text("Observaciones (opcional)") }
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { if (name.isNotBlank()) onSave(name, phone) },
+                onClick = { onSave(name, phone, email, address, notes) },
                 enabled = name.isNotBlank()
             ) {
                 Text("Guardar")
@@ -649,61 +1077,74 @@ private fun NewDebtDialog(
 
     val selectedClient = clients.firstOrNull { it.id == selectedClientId }
     val amount = amountText.filter { it.isDigit() }.toLongOrNull() ?: 0L
+    val validDate = dueDate.isBlank() || isValidDate(dueDate)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Nueva deuda") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box {
-                    OutlinedButton(onClick = { clientMenu = true }) {
-                        Text("Cliente: ${selectedClient?.name ?: "Seleccionar"}")
-                    }
-                    DropdownMenu(
-                        expanded = clientMenu,
-                        onDismissRequest = { clientMenu = false }
-                    ) {
-                        clients.forEach { client ->
-                            DropdownMenuItem(
-                                text = { Text(client.name) },
-                                onClick = {
-                                    selectedClientId = client.id
-                                    clientMenu = false
-                                }
-                            )
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                item {
+                    Box {
+                        OutlinedButton(onClick = { clientMenu = true }) {
+                            Text("Cliente: ${selectedClient?.name ?: "Seleccionar"}")
+                        }
+                        DropdownMenu(
+                            expanded = clientMenu,
+                            onDismissRequest = { clientMenu = false }
+                        ) {
+                            clients.forEach { client ->
+                                DropdownMenuItem(
+                                    text = { Text(client.name) },
+                                    onClick = {
+                                        selectedClientId = client.id
+                                        clientMenu = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
 
-                OutlinedTextField(
-                    value = concept,
-                    onValueChange = { concept = it },
-                    label = { Text("Concepto") },
-                    placeholder = { Text("Ej: Cuota septiembre") },
-                    singleLine = true
-                )
+                item {
+                    OutlinedTextField(
+                        value = concept,
+                        onValueChange = { concept = it },
+                        label = { Text("Concepto") },
+                        placeholder = { Text("Ej: Cuota septiembre") },
+                        singleLine = true
+                    )
+                }
 
-                OutlinedTextField(
-                    value = amountText,
-                    onValueChange = { amountText = it.filter(Char::isDigit) },
-                    label = { Text("Monto") },
-                    placeholder = { Text("Ej: 15000") },
-                    singleLine = true
-                )
+                item {
+                    OutlinedTextField(
+                        value = amountText,
+                        onValueChange = { amountText = it.filter(Char::isDigit) },
+                        label = { Text("Monto") },
+                        placeholder = { Text("Ej: 15000") },
+                        singleLine = true
+                    )
+                }
 
-                OutlinedTextField(
-                    value = dueDate,
-                    onValueChange = { dueDate = it },
-                    label = { Text("Vencimiento") },
-                    placeholder = { Text("dd/mm/aaaa") },
-                    singleLine = true
-                )
+                item {
+                    OutlinedTextField(
+                        value = dueDate,
+                        onValueChange = { dueDate = it },
+                        label = { Text("Vencimiento") },
+                        placeholder = { Text("dd/mm/aaaa") },
+                        singleLine = true,
+                        isError = !validDate,
+                        supportingText = {
+                            if (!validDate) Text("Usa el formato dd/mm/aaaa")
+                        }
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = { onSave(selectedClientId, concept, amount, dueDate) },
-                enabled = selectedClientId != 0L && amount > 0
+                enabled = selectedClientId != 0L && amount > 0 && validDate
             ) {
                 Text("Guardar")
             }
@@ -776,6 +1217,18 @@ private fun formatCurrency(value: Long): String {
     return formatter.format(value)
 }
 
+private fun isValidDate(dateText: String): Boolean {
+    if (dateText.isBlank()) return true
+    return try {
+        val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+        formatter.isLenient = false
+        formatter.parse(dateText)
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
 private fun isOverdue(dateText: String): Boolean {
     if (dateText.isBlank()) return false
     return try {
@@ -787,6 +1240,10 @@ private fun isOverdue(dateText: String): Boolean {
     } catch (_: Exception) {
         false
     }
+}
+
+private fun currentDate(): String {
+    return SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date())
 }
 
 private fun normalizePhone(phone: String): String {
@@ -815,14 +1272,42 @@ private fun sendWhatsAppReminder(context: Context, client: Client, debt: Debt) {
         append("Si ya realizaste el pago, puedes ignorar este mensaje. Gracias.")
     }
 
+    openWhatsApp(context, phone, message)
+}
+
+private fun sendWhatsAppClient(context: Context, client: Client) {
+    val phone = normalizePhone(client.phone)
+    val message = "Hola ${client.name} 👋"
+    openWhatsApp(context, phone, message)
+}
+
+private fun openWhatsApp(context: Context, phone: String, message: String) {
     val url = if (phone.isBlank()) {
         "https://wa.me/?text=${Uri.encode(message)}"
     } else {
         "https://wa.me/$phone?text=${Uri.encode(message)}"
     }
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+}
 
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-    context.startActivity(intent)
+private fun shareClientSummary(context: Context, client: Client, debts: List<Debt>) {
+    val pending = debts.sumOf { remainingBalance(it) }
+    val collected = debts.sumOf { it.paidAmount.coerceAtMost(it.amount) }
+    val overdue = debts.count { debtStatus(it) == "Vencido" }
+
+    val text = buildString {
+        append("Resumen CobrosPyme - ${client.name}\n\n")
+        append("Pendiente: ${formatCurrency(pending)}\n")
+        append("Pagado: ${formatCurrency(collected)}\n")
+        append("Cobros vencidos: $overdue\n")
+        append("Total de cobros: ${debts.size}\n")
+    }
+
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(intent, "Compartir resumen"))
 }
 
 private fun loadClients(context: Context): List<Client> {
@@ -838,7 +1323,10 @@ private fun loadClients(context: Context): List<Client> {
                 Client(
                     id = obj.getLong("id"),
                     name = obj.getString("name"),
-                    phone = obj.optString("phone")
+                    phone = obj.optString("phone"),
+                    email = obj.optString("email"),
+                    address = obj.optString("address"),
+                    notes = obj.optString("notes")
                 )
             )
         }
@@ -856,6 +1344,9 @@ private fun saveClients(context: Context, clients: List<Client>) {
                 .put("id", client.id)
                 .put("name", client.name)
                 .put("phone", client.phone)
+                .put("email", client.email)
+                .put("address", client.address)
+                .put("notes", client.notes)
         )
     }
 
@@ -918,5 +1409,47 @@ private fun saveDebts(context: Context, debts: List<Debt>) {
     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_DEBTS, array.toString())
+        .apply()
+}
+
+private fun loadPayments(context: Context): List<PaymentRecord> {
+    val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    val raw = prefs.getString(KEY_PAYMENTS, "[]") ?: "[]"
+    val result = mutableListOf<PaymentRecord>()
+
+    return try {
+        val array = JSONArray(raw)
+        for (i in 0 until array.length()) {
+            val obj = array.getJSONObject(i)
+            result.add(
+                PaymentRecord(
+                    id = obj.getLong("id"),
+                    debtId = obj.getLong("debtId"),
+                    amount = obj.getLong("amount"),
+                    date = obj.optString("date")
+                )
+            )
+        }
+        result
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun savePayments(context: Context, payments: List<PaymentRecord>) {
+    val array = JSONArray()
+    payments.forEach { payment ->
+        array.put(
+            JSONObject()
+                .put("id", payment.id)
+                .put("debtId", payment.debtId)
+                .put("amount", payment.amount)
+                .put("date", payment.date)
+        )
+    }
+
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_PAYMENTS, array.toString())
         .apply()
 }
