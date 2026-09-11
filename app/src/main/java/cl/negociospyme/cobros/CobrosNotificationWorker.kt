@@ -3,7 +3,9 @@ package cl.negociospyme.cobros
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -12,6 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import org.json.JSONArray
+import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -41,6 +44,7 @@ class CobrosNotificationWorker(
             val shouldNotify = days < 0 || days == 0L || days == before.toLong()
             if (!shouldNotify) continue
 
+            val debtId = debt.optLong("id")
             val clientId = debt.optLong("clientId")
             val clientName = findClientName(clients, clientId)
             val amount = (debt.optLong("amount") - debt.optLong("paidAmount")).coerceAtLeast(0L)
@@ -51,9 +55,10 @@ class CobrosNotificationWorker(
             }
 
             showNotification(
-                id = (debt.optLong("id") % Int.MAX_VALUE).toInt(),
+                id = (debtId % Int.MAX_VALUE).toInt(),
+                debtId = debtId,
                 title = "$status · $clientName",
-                text = "Saldo pendiente: $amount · Vence $dueDate"
+                text = "Saldo pendiente: ${formatCurrency(amount)} · Vence $dueDate"
             )
         }
         return Result.success()
@@ -78,6 +83,13 @@ class CobrosNotificationWorker(
         }
     }
 
+    private fun formatCurrency(value: Long): String {
+        val formatter = NumberFormat.getCurrencyInstance(Locale("es", "CL"))
+        formatter.maximumFractionDigits = 0
+        formatter.minimumFractionDigits = 0
+        return formatter.format(value)
+    }
+
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -86,12 +98,14 @@ class CobrosNotificationWorker(
                     "cobros_vencimientos",
                     "Vencimientos de cobros",
                     NotificationManager.IMPORTANCE_DEFAULT
-                )
+                ).apply {
+                    description = "Avisos de vencimientos y cobros pendientes"
+                }
             )
         }
     }
 
-    private fun showNotification(id: Int, title: String, text: String) {
+    private fun showNotification(id: Int, debtId: Long, title: String, text: String) {
         if (
             Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(
@@ -100,11 +114,24 @@ class CobrosNotificationWorker(
             ) != PackageManager.PERMISSION_GRANTED
         ) return
 
+        val openIntent = Intent(applicationContext, MainActivity::class.java).apply {
+            putExtra("openDebtId", debtId)
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            id,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val notification = NotificationCompat.Builder(applicationContext, "cobros_vencimientos")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .build()
 

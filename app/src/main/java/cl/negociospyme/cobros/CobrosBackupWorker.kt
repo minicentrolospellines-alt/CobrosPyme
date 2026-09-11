@@ -19,7 +19,7 @@ class CobrosBackupWorker(
 
         val root = JSONObject()
             .put("app", "CobrosPyme")
-            .put("version", "v1.3")
+            .put("version", "v1.4")
             .put("fecha", SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date()))
             .put("business", JSONObject(prefs.getString("business", "{}") ?: "{}"))
             .put("clients", JSONArray(prefs.getString("clients", "[]") ?: "[]"))
