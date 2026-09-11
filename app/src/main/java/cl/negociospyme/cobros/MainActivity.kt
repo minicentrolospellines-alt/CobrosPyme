@@ -111,9 +111,9 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.6.2"
+private const val APP_VERSION_LABEL = "v1.6.3"
 private const val FREE_DEBT_LIMIT = 10
-private const val TEST_BANNER_AD_UNIT_ID = "ca-app-pub-3940256099942544/6300978111"
+private const val ADMOB_BANNER_AD_UNIT_ID = "ca-app-pub-6312173292390227/5371329835"
 
 data class Client(
     val id: Long,
@@ -1022,7 +1022,7 @@ private fun FreePlanBannerAd() {
             factory = { context ->
                 AdView(context).apply {
                     setAdSize(AdSize.BANNER)
-                    adUnitId = TEST_BANNER_AD_UNIT_ID
+                    adUnitId = ADMOB_BANNER_AD_UNIT_ID
                     loadAd(AdRequest.Builder().build())
                 }
             }
