@@ -86,7 +86,7 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.3"
+private const val APP_VERSION_LABEL = "v1.3.1"
 
 data class Client(
     val id: Long,
@@ -776,20 +776,47 @@ private fun BottomMenu(
     current: Screen,
     onChange: (Screen) -> Unit
 ) {
-    Surface(tonalElevation = 6.dp, shadowElevation = 8.dp) {
+    Surface(
+        tonalElevation = 6.dp,
+        shadowElevation = 8.dp
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 2.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+                .padding(horizontal = 6.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            MenuButton("Inicio", current == Screen.HOME) { onChange(Screen.HOME) }
-            MenuButton("Clientes", current == Screen.CLIENTS) { onChange(Screen.CLIENTS) }
-            MenuButton("Cobros", current == Screen.DEBTS) { onChange(Screen.DEBTS) }
-            MenuButton("Agenda", current == Screen.CALENDAR) { onChange(Screen.CALENDAR) }
-            MenuButton("Ajustes", current == Screen.SETTINGS) { onChange(Screen.SETTINGS) }
+            MenuButton(
+                text = "Inicio",
+                selected = current == Screen.HOME,
+                modifier = Modifier.weight(1f)
+            ) { onChange(Screen.HOME) }
+
+            MenuButton(
+                text = "Clientes",
+                selected = current == Screen.CLIENTS,
+                modifier = Modifier.weight(1f)
+            ) { onChange(Screen.CLIENTS) }
+
+            MenuButton(
+                text = "Cobros",
+                selected = current == Screen.DEBTS,
+                modifier = Modifier.weight(1f)
+            ) { onChange(Screen.DEBTS) }
+
+            MenuButton(
+                text = "Agenda",
+                selected = current == Screen.CALENDAR,
+                modifier = Modifier.weight(1f)
+            ) { onChange(Screen.CALENDAR) }
+
+            MenuButton(
+                text = "Ajustes",
+                selected = current == Screen.SETTINGS,
+                modifier = Modifier.weight(1f)
+            ) { onChange(Screen.SETTINGS) }
         }
     }
 }
@@ -798,19 +825,42 @@ private fun BottomMenu(
 private fun MenuButton(
     text: String,
     selected: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    if (selected) {
-        Button(
-            onClick = onClick,
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Text(text)
-        }
+    val background = if (selected) {
+        MaterialTheme.colorScheme.primary
     } else {
-        TextButton(onClick = onClick) { Text(text) }
+        Color.Transparent
+    }
+
+    val foreground = if (selected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+
+    Box(
+        modifier = modifier
+            .height(50.dp)
+            .background(
+                color = background,
+                shape = RoundedCornerShape(14.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            color = foreground,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1
+        )
     }
 }
+
 
 @Composable
 private fun HomeScreen(
