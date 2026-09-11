@@ -106,7 +106,7 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.4.2"
+private const val APP_VERSION_LABEL = "v1.5"
 
 data class Client(
     val id: Long,
@@ -130,7 +130,9 @@ data class Debt(
     val paid: Boolean,
     val category: String = "Otro",
     val reminderEnabled: Boolean = true,
-    val reminderDaysBefore: Int = 1
+    val reminderDaysBefore: Int = 1,
+    val recurrence: String = "Ninguno",
+    val recurrenceParentId: Long = 0L
 )
 
 data class PaymentRecord(
@@ -296,6 +298,14 @@ fun CobrosPymeApp(
     var importMessage by remember { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        val generated = generateRecurringDebts(debts.toList())
+        if (generated.isNotEmpty()) {
+            debts.addAll(generated)
+            saveDebts(context, debts)
+        }
+    }
 
     LaunchedEffect(openDebtId) {
         val id = openDebtId ?: return@LaunchedEffect
@@ -516,7 +526,7 @@ fun CobrosPymeApp(
         NewDebtDialog(
             clients = clients,
             onDismiss = { showDebtDialog = false },
-            onSave = { clientId, concept, amount, dueDate, category, reminderEnabled, reminderDaysBefore ->
+            onSave = { clientId, concept, amount, dueDate, category, reminderEnabled, reminderDaysBefore, recurrence ->
                 debts.add(
                     Debt(
                         id = System.currentTimeMillis(),
@@ -528,7 +538,8 @@ fun CobrosPymeApp(
                         paid = false,
                         category = category,
                         reminderEnabled = reminderEnabled,
-                        reminderDaysBefore = reminderDaysBefore
+                        reminderDaysBefore = reminderDaysBefore,
+                        recurrence = recurrence
                     )
                 )
                 saveDebts(context, debts)
@@ -624,7 +635,7 @@ fun CobrosPymeApp(
             debt = debt,
             clients = clients,
             onDismiss = { editingDebt = null },
-            onSave = { clientId, concept, amount, dueDate, category, reminderEnabled, reminderDaysBefore ->
+            onSave = { clientId, concept, amount, dueDate, category, reminderEnabled, reminderDaysBefore, recurrence ->
                 val index = debts.indexOfFirst { it.id == debt.id }
                 if (index >= 0) {
                     val paidAmount = debt.paidAmount.coerceAtMost(amount)
@@ -637,7 +648,8 @@ fun CobrosPymeApp(
                         paid = paidAmount >= amount,
                         category = category,
                         reminderEnabled = reminderEnabled,
-                        reminderDaysBefore = reminderDaysBefore
+                        reminderDaysBefore = reminderDaysBefore,
+                        recurrence = recurrence
                     )
                     saveDebts(context, debts)
                     selectedDebt = debts[index]
@@ -1025,6 +1037,11 @@ private fun HomeScreen(
     val overdueAmount = debts.filter { debtStatus(it) == "Vencido" }.sumOf { remainingBalance(it) }
     val dueToday = debts.count { debtStatus(it) != "Pagado" && daysUntilDue(it.dueDate) == 0L }
     val overdueCount = debts.count { debtStatus(it) == "Vencido" }
+    val recurringActive = debts.count { it.recurrence != "Ninguno" && debtStatus(it) != "Pagado" }
+    val dueNext7 = debts.count {
+        val days = daysUntilDue(it.dueDate)
+        debtStatus(it) != "Pagado" && days != null && days in 1L..7L
+    }
     val totalOriginal = debts.sumOf { it.amount }
     val recoveryPercent = if (totalOriginal > 0) ((totalCollected * 100) / totalOriginal).toInt() else 0
 
@@ -1095,6 +1112,11 @@ private fun HomeScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 DashboardMetric("Vence hoy", dueToday.toString(), Color(0xFFFFF0D9), Modifier.weight(1f))
                 DashboardMetric("Vencidos", overdueCount.toString(), Color(0xFFFFE5E5), Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DashboardMetric("Recurrentes", recurringActive.toString(), Color(0xFFF0E8FF), Modifier.weight(1f))
+                DashboardMetric("Próx. 7 días", dueNext7.toString(), Color(0xFFEAF2FF), Modifier.weight(1f))
             }
         }
 
@@ -1568,6 +1590,9 @@ private fun DebtCard(
                 fontWeight = FontWeight.Bold
             )
             Text("Vence: ${debt.dueDate.ifBlank { "Sin fecha" }}")
+            if (debt.recurrence != "Ninguno") {
+                Text("Recurrente: ${debt.recurrence}", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+            }
             if (debt.reminderEnabled) {
                 Text("Recordatorio: ${debt.reminderDaysBefore} día(s) antes", fontSize = 12.sp)
             }
@@ -1740,6 +1765,9 @@ private fun DebtDetailDialog(
                     Text("Progreso: ${(progress * 100).toInt()}%")
                     Text("Saldo: ${formatCurrency(remainingBalance(debt))}", fontWeight = FontWeight.Bold)
                     Text("Vence: ${debt.dueDate.ifBlank { "Sin fecha" }}")
+                    if (debt.recurrence != "Ninguno") {
+                        Text("Repetición: ${debt.recurrence}", color = MaterialTheme.colorScheme.primary)
+                    }
                 }
 
                 if (legacyPaid > 0 || payments.isNotEmpty()) {
@@ -1911,7 +1939,7 @@ private fun ClientDialog(
 private fun NewDebtDialog(
     clients: List<Client>,
     onDismiss: () -> Unit,
-    onSave: (Long, String, Long, String, String, Boolean, Int) -> Unit
+    onSave: (Long, String, Long, String, String, Boolean, Int, String) -> Unit
 ) {
     DebtEditorDialog(
         title = "Nueva deuda",
@@ -1927,7 +1955,7 @@ private fun EditDebtDialog(
     debt: Debt,
     clients: List<Client>,
     onDismiss: () -> Unit,
-    onSave: (Long, String, Long, String, String, Boolean, Int) -> Unit
+    onSave: (Long, String, Long, String, String, Boolean, Int, String) -> Unit
 ) {
     DebtEditorDialog(
         title = "Editar cobro",
@@ -1944,7 +1972,7 @@ private fun DebtEditorDialog(
     clients: List<Client>,
     initial: Debt?,
     onDismiss: () -> Unit,
-    onSave: (Long, String, Long, String, String, Boolean, Int) -> Unit
+    onSave: (Long, String, Long, String, String, Boolean, Int, String) -> Unit
 ) {
     val context = LocalContext.current
     var selectedClientId by remember(initial?.id) {
@@ -1956,9 +1984,11 @@ private fun DebtEditorDialog(
     var category by remember(initial?.id) { mutableStateOf(initial?.category ?: "Otro") }
     var reminderEnabled by remember(initial?.id) { mutableStateOf(initial?.reminderEnabled ?: true) }
     var reminderDays by remember(initial?.id) { mutableStateOf(initial?.reminderDaysBefore ?: 1) }
+    var recurrence by remember(initial?.id) { mutableStateOf(initial?.recurrence ?: "Ninguno") }
     var clientMenu by remember { mutableStateOf(false) }
     var categoryMenu by remember { mutableStateOf(false) }
     var reminderMenu by remember { mutableStateOf(false) }
+    var recurrenceMenu by remember { mutableStateOf(false) }
 
     val selectedClient = clients.firstOrNull { it.id == selectedClientId }
     val amount = amountText.filter(Char::isDigit).toLongOrNull() ?: 0L
@@ -2017,6 +2047,21 @@ private fun DebtEditorDialog(
                     }
                 }
                 item {
+                    Box {
+                        OutlinedButton(onClick = { recurrenceMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (recurrence == "Ninguno") "Repetición: No se repite" else "Repetición: $recurrence")
+                        }
+                        DropdownMenu(recurrenceMenu, { recurrenceMenu = false }) {
+                            listOf("Ninguno", "Semanal", "Mensual").forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(if (option == "Ninguno") "No se repite" else option) },
+                                    onClick = { recurrence = option; recurrenceMenu = false }
+                                )
+                            }
+                        }
+                    }
+                }
+                item {
                     OutlinedButton(
                         onClick = { reminderEnabled = !reminderEnabled },
                         modifier = Modifier.fillMaxWidth()
@@ -2049,7 +2094,7 @@ private fun DebtEditorDialog(
                 onClick = {
                     onSave(
                         selectedClientId, concept, amount, dueDate,
-                        category, reminderEnabled, reminderDays
+                        category, reminderEnabled, reminderDays, recurrence
                     )
                 }
             ) { Text("Guardar") }
@@ -2501,6 +2546,62 @@ private fun ImportBackupDialog(
             TextButton(onClick = onDismiss) { Text("Cancelar") }
         }
     )
+}
+
+private fun generateRecurringDebts(existing: List<Debt>): List<Debt> {
+    if (existing.isEmpty()) return emptyList()
+
+    val all = existing.toMutableList()
+    val generated = mutableListOf<Debt>()
+    var nextId = (all.maxOfOrNull { it.id } ?: System.currentTimeMillis()).coerceAtLeast(System.currentTimeMillis()) + 1L
+    var guard = 0
+
+    while (guard < 240) {
+        guard++
+        val source = all
+            .filter { it.recurrence != "Ninguno" && it.dueDate.isNotBlank() }
+            .sortedBy { parseDateOrMax(it.dueDate) }
+            .firstOrNull { candidate ->
+                val due = daysUntilDue(candidate.dueDate)
+                due != null && due <= 0L && all.none { it.recurrenceParentId == candidate.id }
+            } ?: break
+
+        val nextDate = nextRecurrenceDate(source.dueDate, source.recurrence) ?: break
+        val nextDebt = source.copy(
+            id = nextId++,
+            paidAmount = 0L,
+            dueDate = nextDate,
+            paid = false,
+            recurrenceParentId = source.id
+        )
+        all.add(nextDebt)
+        generated.add(nextDebt)
+    }
+
+    return generated
+}
+
+private fun nextRecurrenceDate(dateText: String, recurrence: String): String? {
+    return try {
+        val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).apply { isLenient = false }
+        val date = formatter.parse(dateText) ?: return null
+        val calendar = Calendar.getInstance().apply { time = date }
+
+        when (recurrence) {
+            "Semanal" -> calendar.add(Calendar.DAY_OF_MONTH, 7)
+            "Mensual" -> {
+                val desiredDay = calendar.get(Calendar.DAY_OF_MONTH)
+                calendar.set(Calendar.DAY_OF_MONTH, 1)
+                calendar.add(Calendar.MONTH, 1)
+                val maxDay = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
+                calendar.set(Calendar.DAY_OF_MONTH, desiredDay.coerceAtMost(maxDay))
+            }
+            else -> return null
+        }
+        formatter.format(calendar.time)
+    } catch (_: Exception) {
+        null
+    }
 }
 
 private fun remainingBalance(debt: Debt): Long {
@@ -3042,6 +3143,8 @@ private fun shareBackup(
                 .put("category", it.category)
                 .put("reminderEnabled", it.reminderEnabled)
                 .put("reminderDaysBefore", it.reminderDaysBefore)
+                .put("recurrence", it.recurrence)
+                .put("recurrenceParentId", it.recurrenceParentId)
         )
     }
     root.put("debts", debtsArray)
@@ -3114,7 +3217,9 @@ private fun parseBackup(raw: String): BackupData? {
                     paid = o.optBoolean("paid"),
                     category = o.optString("category", "Otro"),
                     reminderEnabled = o.optBoolean("reminderEnabled", true),
-                    reminderDaysBefore = o.optInt("reminderDaysBefore", 1)
+                    reminderDaysBefore = o.optInt("reminderDaysBefore", 1),
+                    recurrence = o.optString("recurrence", "Ninguno"),
+                    recurrenceParentId = o.optLong("recurrenceParentId", 0L)
                 )
             )
         }
@@ -3260,7 +3365,9 @@ private fun loadDebts(context: Context): List<Debt> {
                     paid = oldPaid || paidAmount >= amount,
                     category = obj.optString("category", "Otro"),
                     reminderEnabled = obj.optBoolean("reminderEnabled", true),
-                    reminderDaysBefore = obj.optInt("reminderDaysBefore", 1)
+                    reminderDaysBefore = obj.optInt("reminderDaysBefore", 1),
+                    recurrence = obj.optString("recurrence", "Ninguno"),
+                    recurrenceParentId = obj.optLong("recurrenceParentId", 0L)
                 )
             )
         }
@@ -3285,6 +3392,8 @@ private fun saveDebts(context: Context, debts: List<Debt>) {
                 .put("category", debt.category)
                 .put("reminderEnabled", debt.reminderEnabled)
                 .put("reminderDaysBefore", debt.reminderDaysBefore)
+                .put("recurrence", debt.recurrence)
+                .put("recurrenceParentId", debt.recurrenceParentId)
         )
     }
 
