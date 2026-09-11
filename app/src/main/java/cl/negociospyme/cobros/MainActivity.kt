@@ -98,6 +98,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.Image
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.AdRequest
+import androidx.compose.ui.viewinterop.AndroidView
 private const val PREFS = "cobrospyme_data"
 private const val KEY_CLIENTS = "clients"
 private const val KEY_DEBTS = "debts"
@@ -106,8 +111,9 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.6.1"
+private const val APP_VERSION_LABEL = "v1.6.2"
 private const val FREE_DEBT_LIMIT = 10
+private const val TEST_BANNER_AD_UNIT_ID = "ca-app-pub-3940256099942544/6300978111"
 
 data class Client(
     val id: Long,
@@ -181,6 +187,7 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        MobileAds.initialize(this) { }
         scheduleCobrosWorkers(this)
         requestNotificationPermissionIfNeeded()
         openDebtIdState.value = intent.getLongExtra("openDebtId", -1L).takeIf { it > 0L }
@@ -353,10 +360,15 @@ fun CobrosPymeApp(
 
     Scaffold(
         bottomBar = {
-            BottomMenu(
-                current = screen,
-                onChange = { screen = it }
-            )
+            Column {
+                if (screen == Screen.HOME || screen == Screen.SETTINGS) {
+                    FreePlanBannerAd()
+                }
+                BottomMenu(
+                    current = screen,
+                    onChange = { screen = it }
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
@@ -986,6 +998,35 @@ private fun LockScreen(
         OutlinedButton(onClick = onBiometric, modifier = Modifier.fillMaxWidth()) {
             Text("Usar huella / bloqueo del teléfono")
         }
+    }
+}
+
+
+@Composable
+private fun FreePlanBannerAd() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Publicidad",
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        AndroidView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp),
+            factory = { context ->
+                AdView(context).apply {
+                    setAdSize(AdSize.BANNER)
+                    adUnitId = TEST_BANNER_AD_UNIT_ID
+                    loadAd(AdRequest.Builder().build())
+                }
+            }
+        )
     }
 }
 
