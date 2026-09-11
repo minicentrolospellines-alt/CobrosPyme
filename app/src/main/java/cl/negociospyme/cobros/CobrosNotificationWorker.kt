@@ -14,8 +14,10 @@ import androidx.core.content.ContextCompat
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import org.json.JSONArray
+import org.json.JSONObject
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -28,6 +30,10 @@ class CobrosNotificationWorker(
         val prefs = applicationContext.getSharedPreferences("cobrospyme_data", Context.MODE_PRIVATE)
         val debts = JSONArray(prefs.getString("debts", "[]") ?: "[]")
         val clients = JSONArray(prefs.getString("clients", "[]") ?: "[]")
+
+        if (generateRecurringDebts(debts)) {
+            prefs.edit().putString("debts", debts.toString()).apply()
+        }
 
         createChannel()
 
@@ -45,9 +51,17 @@ class CobrosNotificationWorker(
             if (!shouldNotify) continue
 
             val debtId = debt.optLong("id")
+            val statusKey = when {
+                days < 0 -> "overdue"
+                days == 0L -> "today"
+                else -> "before"
+            }
+            if (alreadyNotifiedToday(debtId, statusKey)) continue
+
             val clientId = debt.optLong("clientId")
             val clientName = findClientName(clients, clientId)
             val amount = (debt.optLong("amount") - debt.optLong("paidAmount")).coerceAtLeast(0L)
+            val concept = debt.optString("concept").ifBlank { debt.optString("category", "Cobro") }
             val status = when {
                 days < 0 -> "Cobro vencido"
                 days == 0L -> "Vence hoy"
@@ -58,10 +72,89 @@ class CobrosNotificationWorker(
                 id = (debtId % Int.MAX_VALUE).toInt(),
                 debtId = debtId,
                 title = "$status · $clientName",
-                text = "Saldo pendiente: ${formatCurrency(amount)} · Vence $dueDate"
+                text = "$concept · ${formatCurrency(amount)} · Vence $dueDate"
             )
+            markNotifiedToday(debtId, statusKey)
         }
         return Result.success()
+    }
+
+    private fun generateRecurringDebts(debts: JSONArray): Boolean {
+        var changed = false
+        var nextId = System.currentTimeMillis()
+        for (i in 0 until debts.length()) {
+            nextId = maxOf(nextId, debts.optJSONObject(i)?.optLong("id", 0L) ?: 0L)
+        }
+        nextId++
+
+        var guard = 0
+        while (guard < 240) {
+            guard++
+            var source: JSONObject? = null
+
+            for (i in 0 until debts.length()) {
+                val candidate = debts.optJSONObject(i) ?: continue
+                val recurrence = candidate.optString("recurrence", "Ninguno")
+                val dueDate = candidate.optString("dueDate")
+                if (recurrence == "Ninguno" || dueDate.isBlank()) continue
+
+                val due = daysUntil(dueDate) ?: continue
+                if (due > 0L) continue
+
+                val candidateId = candidate.optLong("id")
+                var hasChild = false
+                for (j in 0 until debts.length()) {
+                    val child = debts.optJSONObject(j) ?: continue
+                    if (child.optLong("recurrenceParentId", 0L) == candidateId) {
+                        hasChild = true
+                        break
+                    }
+                }
+                if (!hasChild) {
+                    source = candidate
+                    break
+                }
+            }
+
+            val current = source ?: break
+            val recurrence = current.optString("recurrence", "Ninguno")
+            val nextDate = nextRecurrenceDate(current.optString("dueDate"), recurrence) ?: break
+
+            val next = JSONObject(current.toString())
+                .put("id", nextId++)
+                .put("paidAmount", 0L)
+                .put("paid", false)
+                .put("dueDate", nextDate)
+                .put("recurrenceParentId", current.optLong("id"))
+
+            debts.put(next)
+            changed = true
+        }
+        return changed
+    }
+
+    private fun nextRecurrenceDate(dateText: String, recurrence: String): String? {
+        return try {
+            val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).apply { isLenient = false }
+            val date = formatter.parse(dateText) ?: return null
+            val calendar = Calendar.getInstance().apply { time = date }
+            when (recurrence) {
+                "Semanal" -> calendar.add(Calendar.DAY_OF_MONTH, 7)
+                "Mensual" -> {
+                    val desiredDay = calendar.get(Calendar.DAY_OF_MONTH)
+                    calendar.set(Calendar.DAY_OF_MONTH, 1)
+                    calendar.add(Calendar.MONTH, 1)
+                    calendar.set(
+                        Calendar.DAY_OF_MONTH,
+                        desiredDay.coerceAtMost(calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                    )
+                }
+                else -> return null
+            }
+            formatter.format(calendar.time)
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun findClientName(clients: JSONArray, clientId: Long): String {
@@ -81,6 +174,21 @@ class CobrosNotificationWorker(
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun todayKey(): String =
+        SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+
+    private fun alreadyNotifiedToday(debtId: Long, statusKey: String): Boolean {
+        val prefs = applicationContext.getSharedPreferences("cobrospyme_notifications", Context.MODE_PRIVATE)
+        return prefs.getBoolean("${todayKey()}_${debtId}_$statusKey", false)
+    }
+
+    private fun markNotifiedToday(debtId: Long, statusKey: String) {
+        applicationContext.getSharedPreferences("cobrospyme_notifications", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("${todayKey()}_${debtId}_$statusKey", true)
+            .apply()
     }
 
     private fun formatCurrency(value: Long): String {
