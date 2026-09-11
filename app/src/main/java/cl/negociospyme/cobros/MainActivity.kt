@@ -103,7 +103,7 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.4"
+private const val APP_VERSION_LABEL = "v1.4.1"
 
 data class Client(
     val id: Long,
@@ -319,12 +319,14 @@ fun CobrosPymeApp(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (screen != Screen.SETTINGS) {
-                FloatingActionButton(
-                    onClick = {
-                        if (clients.isEmpty()) showClientDialog = true else showDebtDialog = true
+                Box(modifier = Modifier.padding(bottom = 56.dp)) {
+                    FloatingActionButton(
+                        onClick = {
+                            if (clients.isEmpty()) showClientDialog = true else showDebtDialog = true
+                        }
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Nuevo cobro")
                     }
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Nuevo cobro")
                 }
             }
         }
@@ -1090,10 +1092,23 @@ private fun HomeScreen(
         }
 
         item {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                TextButton(onClick = onOpenClients) { Text("Clientes") }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 TextButton(onClick = onBackup) { Text("Respaldar") }
-                TextButton(onClick = onOpenSettings) { Text("Ajustes") }
+                Text(
+                    text = "Hecho por NegociosPyme",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "by Juan Alarcon",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
