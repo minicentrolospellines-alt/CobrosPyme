@@ -95,6 +95,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.Image
 private const val PREFS = "cobrospyme_data"
 private const val KEY_CLIENTS = "clients"
 private const val KEY_DEBTS = "debts"
@@ -103,7 +106,7 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.4.1"
+private const val APP_VERSION_LABEL = "v1.4.2"
 
 data class Client(
     val id: Long,
@@ -170,6 +173,7 @@ enum class DebtFilter(val label: String) {
 class MainActivity : FragmentActivity() {
     private val unlockedState = mutableStateOf(false)
     private val openDebtIdState = mutableStateOf<Long?>(null)
+    private val splashVisibleState = mutableStateOf(true)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -181,23 +185,32 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             MaterialTheme {
-                if (unlockedState.value) {
-                    CobrosPymeApp(
-                        openDebtId = openDebtIdState.value,
-                        onOpenDebtHandled = { openDebtIdState.value = null }
-                    )
-                } else {
-                    LockScreen(
-                        onPin = { pin ->
-                            if (verifySecurityPin(this, pin)) {
-                                unlockedState.value = true
-                                true
-                            } else {
-                                false
-                            }
-                        },
-                        onBiometric = { showBiometricPrompt() }
-                    )
+                LaunchedEffect(Unit) {
+                    delay(1400)
+                    splashVisibleState.value = false
+                }
+
+                when {
+                    splashVisibleState.value -> BrandSplashScreen()
+                    unlockedState.value -> {
+                        CobrosPymeApp(
+                            openDebtId = openDebtIdState.value,
+                            onOpenDebtHandled = { openDebtIdState.value = null }
+                        )
+                    }
+                    else -> {
+                        LockScreen(
+                            onPin = { pin ->
+                                if (verifySecurityPin(this, pin)) {
+                                    unlockedState.value = true
+                                    true
+                                } else {
+                                    false
+                                }
+                            },
+                            onBiometric = { showBiometricPrompt() }
+                        )
+                    }
                 }
             }
         }
@@ -824,6 +837,57 @@ fun CobrosPymeApp(
     }
 }
 
+
+
+@Composable
+private fun BrandSplashScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFFDF7FF))
+            .padding(28.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            shadowElevation = 8.dp,
+            color = Color.White
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.ic_cobrospyme_icon),
+                contentDescription = "CobrosPyme",
+                modifier = Modifier
+                    .size(126.dp)
+                    .padding(10.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(22.dp))
+        Text(
+            text = "CobrosPyme",
+            fontSize = 34.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "Gestión inteligente de cobros",
+            fontSize = 16.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(30.dp))
+        Text(
+            text = "Hecho por NegociosPyme",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "by Juan Alarcon",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
 
 @Composable
 private fun LockScreen(
@@ -2350,6 +2414,46 @@ private fun BusinessSettingsScreen(
             item { Text(msg, color = MaterialTheme.colorScheme.primary) }
         }
 
+
+        item {
+            Text("Acerca de", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("CobrosPyme $APP_VERSION_LABEL", fontWeight = FontWeight.Bold)
+                    Text("Desarrollado por NegociosPyme")
+                    Text(
+                        "by Juan Alarcon",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://negociospyme.cl")
+                                )
+                            )
+                        }
+                    ) {
+                        Text("Visitar NegociosPyme.cl")
+                    }
+                }
+            }
+        }
+
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -2715,8 +2819,33 @@ private fun sharePaymentReceiptPdf(
         val small = Paint(paint).apply { textSize = 14f }
         val bold = Paint(paint).apply { isFakeBoldText = true; textSize = 24f }
 
-        var y = 60f
-        canvas.drawText(business.name, 50f, y, bold); y += 34f
+        val brandPurple = android.graphics.Color.rgb(111, 82, 217)
+        val whitePaint = Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = 24f
+            isFakeBoldText = true
+            isAntiAlias = true
+        }
+        val brandPaint = Paint().apply {
+            color = brandPurple
+            isAntiAlias = true
+        }
+
+        canvas.drawRoundRect(50f, 42f, 112f, 104f, 14f, 14f, brandPaint)
+        canvas.drawText("NP", 62f, 82f, whitePaint)
+
+        var y = 64f
+        canvas.drawText(business.name, 132f, y, bold); y += 24f
+        canvas.drawText("CobrosPyme · NegociosPyme", 132f, y, small); y += 34f
+
+        if (business.rut.isNotBlank()) {
+            canvas.drawText("RUT: ${business.rut}", 50f, y, small); y += 22f
+        }
+        if (business.whatsapp.isNotBlank()) {
+            canvas.drawText("WhatsApp: ${business.whatsapp}", 50f, y, small); y += 22f
+        }
+
+        y += 8f
         canvas.drawText("COMPROBANTE DE ABONO", 50f, y, bold); y += 32f
         canvas.drawText("N° $receiptNumber", 50f, y, small); y += 34f
 
@@ -2746,7 +2875,9 @@ private fun sharePaymentReceiptPdf(
             }
         }
 
-        y += 24f
+        y += 28f
+        canvas.drawText("Hecho por NegociosPyme · by Juan Alarcon", 50f, y, small)
+        y += 22f
         canvas.drawText("Generado por CobrosPyme · $receiptNumber", 50f, y, small)
         pdf.finishPage(page)
 
