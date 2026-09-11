@@ -78,6 +78,23 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.vector.ImageVector
+import kotlinx.coroutines.launch
 private const val PREFS = "cobrospyme_data"
 private const val KEY_CLIENTS = "clients"
 private const val KEY_DEBTS = "debts"
@@ -86,7 +103,7 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.3.1"
+private const val APP_VERSION_LABEL = "v1.4"
 
 data class Client(
     val id: Long,
@@ -152,19 +169,23 @@ enum class DebtFilter(val label: String) {
 
 class MainActivity : FragmentActivity() {
     private val unlockedState = mutableStateOf(false)
+    private val openDebtIdState = mutableStateOf<Long?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         scheduleCobrosWorkers(this)
         requestNotificationPermissionIfNeeded()
-
+        openDebtIdState.value = intent.getLongExtra("openDebtId", -1L).takeIf { it > 0L }
         unlockedState.value = !loadSecurityEnabled(this)
 
         setContent {
             MaterialTheme {
                 if (unlockedState.value) {
-                    CobrosPymeApp()
+                    CobrosPymeApp(
+                        openDebtId = openDebtIdState.value,
+                        onOpenDebtHandled = { openDebtIdState.value = null }
+                    )
                 } else {
                     LockScreen(
                         onPin = { pin ->
@@ -180,6 +201,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openDebtIdState.value = intent.getLongExtra("openDebtId", -1L).takeIf { it > 0L }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -223,7 +250,10 @@ class MainActivity : FragmentActivity() {
 }
 
 @Composable
-fun CobrosPymeApp() {
+fun CobrosPymeApp(
+    openDebtId: Long? = null,
+    onOpenDebtHandled: () -> Unit = {}
+) {
     val context = LocalContext.current
     val clients = remember {
         mutableStateListOf<Client>().apply { addAll(loadClients(context)) }
@@ -251,6 +281,17 @@ fun CobrosPymeApp() {
     var lastPayment by remember { mutableStateOf<Pair<Debt, Long>?>(null) }
     var showImportDialog by remember { mutableStateOf(false) }
     var importMessage by remember { mutableStateOf<String?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(openDebtId) {
+        val id = openDebtId ?: return@LaunchedEffect
+        debts.firstOrNull { it.id == id }?.let { debt ->
+            selectedDebt = debt
+            screen = Screen.DEBTS
+        }
+        onOpenDebtHandled()
+    }
 
     fun refreshDebtAfterPayments(debtId: Long, paymentsBeforeChange: List<PaymentRecord>) {
         val debtIndex = debts.indexOfFirst { it.id == debtId }
@@ -274,6 +315,18 @@ fun CobrosPymeApp() {
                 current = screen,
                 onChange = { screen = it }
             )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            if (screen != Screen.SETTINGS) {
+                FloatingActionButton(
+                    onClick = {
+                        if (clients.isEmpty()) showClientDialog = true else showDebtDialog = true
+                    }
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Nuevo cobro")
+                }
+            }
         }
     ) { innerPadding ->
         when (screen) {
@@ -533,6 +586,20 @@ fun CobrosPymeApp() {
                 savePayments(context, payments)
                 refreshDebtAfterPayments(payment.debtId, before)
                 deletingPayment = null
+
+                coroutineScope.launch {
+                    val result = snackbarHostState.showSnackbar(
+                        message = "Abono eliminado",
+                        actionLabel = "Deshacer"
+                    )
+                    if (result == SnackbarResult.ActionPerformed) {
+                        val afterDelete = payments.toList()
+                        payments.add(payment)
+                        payments.sortByDescending { it.id }
+                        savePayments(context, payments)
+                        refreshDebtAfterPayments(payment.debtId, afterDelete)
+                    }
+                }
             }
         )
     }
@@ -571,12 +638,28 @@ fun CobrosPymeApp() {
             message = "¿Seguro que quieres eliminar este cobro? También se eliminarán sus abonos.",
             onDismiss = { deletingDebt = null },
             onConfirm = {
+                val removedPayments = payments.filter { it.debtId == debt.id }
                 debts.removeAll { it.id == debt.id }
                 payments.removeAll { it.debtId == debt.id }
                 saveDebts(context, debts)
                 savePayments(context, payments)
                 selectedDebt = null
                 deletingDebt = null
+
+                coroutineScope.launch {
+                    val result = snackbarHostState.showSnackbar(
+                        message = "Cobro eliminado",
+                        actionLabel = "Deshacer"
+                    )
+                    if (result == SnackbarResult.ActionPerformed) {
+                        debts.add(debt)
+                        debts.sortByDescending { it.id }
+                        payments.addAll(removedPayments)
+                        payments.sortByDescending { it.id }
+                        saveDebts(context, debts)
+                        savePayments(context, payments)
+                    }
+                }
             }
         )
     }
@@ -658,6 +741,13 @@ fun CobrosPymeApp() {
             onCopyMessage = {
                 if (client != null) {
                     copyText(context, buildReminderMessage(client, debt, business))
+                }
+            },
+            onCopyPaymentData = {
+                val paymentData = buildPaymentData(business)
+                if (paymentData.isNotBlank()) {
+                    copyText(context, paymentData)
+                    coroutineScope.launch { snackbarHostState.showSnackbar("Datos de transferencia copiados") }
                 }
             },
             onEditDebt = { editingDebt = debt },
@@ -784,39 +874,25 @@ private fun BottomMenu(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 6.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            MenuButton(
-                text = "Inicio",
-                selected = current == Screen.HOME,
-                modifier = Modifier.weight(1f)
-            ) { onChange(Screen.HOME) }
-
-            MenuButton(
-                text = "Clientes",
-                selected = current == Screen.CLIENTS,
-                modifier = Modifier.weight(1f)
-            ) { onChange(Screen.CLIENTS) }
-
-            MenuButton(
-                text = "Cobros",
-                selected = current == Screen.DEBTS,
-                modifier = Modifier.weight(1f)
-            ) { onChange(Screen.DEBTS) }
-
-            MenuButton(
-                text = "Agenda",
-                selected = current == Screen.CALENDAR,
-                modifier = Modifier.weight(1f)
-            ) { onChange(Screen.CALENDAR) }
-
-            MenuButton(
-                text = "Ajustes",
-                selected = current == Screen.SETTINGS,
-                modifier = Modifier.weight(1f)
-            ) { onChange(Screen.SETTINGS) }
+            MenuButton("Inicio", Icons.Default.Home, current == Screen.HOME, Modifier.weight(1f)) {
+                onChange(Screen.HOME)
+            }
+            MenuButton("Clientes", Icons.Default.People, current == Screen.CLIENTS, Modifier.weight(1f)) {
+                onChange(Screen.CLIENTS)
+            }
+            MenuButton("Cobros", Icons.Default.ReceiptLong, current == Screen.DEBTS, Modifier.weight(1f)) {
+                onChange(Screen.DEBTS)
+            }
+            MenuButton("Agenda", Icons.Default.CalendarMonth, current == Screen.CALENDAR, Modifier.weight(1f)) {
+                onChange(Screen.CALENDAR)
+            }
+            MenuButton("Ajustes", Icons.Default.Settings, current == Screen.SETTINGS, Modifier.weight(1f)) {
+                onChange(Screen.SETTINGS)
+            }
         }
     }
 }
@@ -824,40 +900,37 @@ private fun BottomMenu(
 @Composable
 private fun MenuButton(
     text: String,
+    icon: ImageVector,
     selected: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val background = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        Color.Transparent
-    }
-
-    val foreground = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.primary
-    }
+    val background = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+    val foreground = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
 
     Box(
         modifier = modifier
-            .height(50.dp)
-            .background(
-                color = background,
-                shape = RoundedCornerShape(14.dp)
-            )
+            .height(58.dp)
+            .background(background, RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 2.dp),
+            .padding(horizontal = 1.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = text,
-            color = foreground,
-            fontSize = 11.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            maxLines = 1
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = icon,
+                contentDescription = text,
+                tint = foreground,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = text,
+                color = foreground,
+                fontSize = 9.5.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -888,6 +961,17 @@ private fun HomeScreen(
     val overdueCount = debts.count { debtStatus(it) == "Vencido" }
     val totalOriginal = debts.sumOf { it.amount }
     val recoveryPercent = if (totalOriginal > 0) ((totalCollected * 100) / totalOriginal).toInt() else 0
+
+    val topDebtor = clients
+        .map { client -> client to debts.filter { it.clientId == client.id }.sumOf { remainingBalance(it) } }
+        .filter { it.second > 0 }
+        .maxByOrNull { it.second }
+
+    val topCategory = debts
+        .filter { remainingBalance(it) > 0 }
+        .groupBy { it.category }
+        .mapValues { (_, list) -> list.sumOf { remainingBalance(it) } }
+        .maxByOrNull { it.value }
 
     val priorityDebts = debts.sortedWith(
         compareBy<Debt> { statusPriority(it) }
@@ -932,12 +1016,34 @@ private fun HomeScreen(
         }
 
         item {
-            DashboardMetric("Cobrado hoy", formatCurrency(collectedToday), Color(0xFFE4F5E7))
-            DashboardMetric("Cobrado esta semana", formatCurrency(collectedThisWeek), Color(0xFFEAF2FF))
-            DashboardMetric("Cobrado este mes", formatCurrency(collectedThisMonth), Color(0xFFE4F5E7))
-            DashboardMetric("Vencido", formatCurrency(overdueAmount), Color(0xFFFFE5E5))
-            DashboardMetric("Vence hoy", dueToday.toString(), Color(0xFFFFF0D9))
-            DashboardMetric("Cobros vencidos", overdueCount.toString(), Color(0xFFFFE5E5))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DashboardMetric("Hoy", formatCurrency(collectedToday), Color(0xFFE4F5E7), Modifier.weight(1f))
+                DashboardMetric("Semana", formatCurrency(collectedThisWeek), Color(0xFFEAF2FF), Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DashboardMetric("Mes", formatCurrency(collectedThisMonth), Color(0xFFE4F5E7), Modifier.weight(1f))
+                DashboardMetric("Vencido", formatCurrency(overdueAmount), Color(0xFFFFE5E5), Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DashboardMetric("Vence hoy", dueToday.toString(), Color(0xFFFFF0D9), Modifier.weight(1f))
+                DashboardMetric("Vencidos", overdueCount.toString(), Color(0xFFFFE5E5), Modifier.weight(1f))
+            }
+        }
+
+        if (topDebtor != null || topCategory != null) {
+            item {
+                Text("Análisis rápido", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                topDebtor?.let {
+                    InsightCard("Mayor deuda", "${it.first.name} · ${formatCurrency(it.second)}")
+                }
+                topCategory?.let {
+                    InsightCard("Categoría con más saldo", "${it.key} · ${formatCurrency(it.value)}")
+                }
+                InsightCard("Recuperado", "$recoveryPercent% del total registrado")
+            }
         }
 
         item {
@@ -994,18 +1100,39 @@ private fun HomeScreen(
 }
 
 @Composable
-private fun DashboardMetric(title: String, value: String, color: Color) {
+private fun DashboardMetric(
+    title: String,
+    value: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = modifier.height(94.dp),
         colors = CardDefaults.cardColors(containerColor = color),
         shape = RoundedCornerShape(14.dp)
     ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(12.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(title, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun InsightCard(title: String, value: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(title)
-            Text(value, fontWeight = FontWeight.Bold)
+            Text(title, fontSize = 13.sp)
+            Text(value, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -1092,10 +1219,17 @@ private fun ClientsScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Top
                         ) {
                             Text(client.name, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                            ClientTag(client)
+                            Column(horizontalAlignment = Alignment.End) {
+                                ClientStatusBadge(clientAccountStatus(clientDebts))
+                                if (client.label.isNotBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    ClientTag(client)
+                                }
+                            }
                         }
                         if (client.rut.isNotBlank()) Text("RUT: ${client.rut}")
                         Text(client.phone.ifBlank { "Sin teléfono" })
@@ -1125,6 +1259,30 @@ private fun ClientTag(client: Client) {
         )
     }
 }
+
+@Composable
+private fun ClientStatusBadge(status: String) {
+    val background = when (status) {
+        "Vencido" -> Color(0xFFFFE5E5)
+        "Pendiente" -> Color(0xFFFFF0D9)
+        else -> Color(0xFFE4F5E7)
+    }
+    val foreground = when (status) {
+        "Vencido" -> Color(0xFFB71C1C)
+        "Pendiente" -> Color(0xFFE65100)
+        else -> Color(0xFF1B5E20)
+    }
+    Surface(color = background, shape = RoundedCornerShape(50)) {
+        Text(
+            status,
+            color = foreground,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
 
 
 @Composable
@@ -1471,6 +1629,7 @@ private fun DebtDetailDialog(
     onPayment: () -> Unit,
     onWhatsApp: () -> Unit,
     onCopyMessage: () -> Unit,
+    onCopyPaymentData: () -> Unit,
     onEditDebt: () -> Unit,
     onDeleteDebt: () -> Unit,
     onEditPayment: (PaymentRecord) -> Unit,
@@ -1532,11 +1691,16 @@ private fun DebtDetailDialog(
             TextButton(onClick = onDismiss) { Text("Cerrar") }
         },
         dismissButton = {
-            if (debtStatus(debt) != "Pagado") {
-                Column(horizontalAlignment = Alignment.End) {
+            Column(horizontalAlignment = Alignment.End) {
+                if (debtStatus(debt) != "Pagado") {
                     TextButton(onClick = onPayment) { Text("Registrar abono") }
                     TextButton(onClick = onWhatsApp) { Text("WhatsApp") }
                     TextButton(onClick = onCopyMessage) { Text("Copiar mensaje") }
+                    TextButton(onClick = onCopyPaymentData) { Text("Copiar transferencia") }
+                }
+                TextButton(onClick = onEditDebt) { Text("Editar cobro") }
+                TextButton(onClick = onDeleteDebt) {
+                    Text("Eliminar cobro", color = Color(0xFFC62828))
                 }
             }
         }
@@ -1926,6 +2090,12 @@ private fun ConfirmDialog(
     )
 }
 
+enum class AgendaRange(val label: String) {
+    TODAY("Hoy"),
+    WEEK("Semana"),
+    MONTH("Mes")
+}
+
 @Composable
 private fun CalendarScreen(
     modifier: Modifier,
@@ -1935,15 +2105,23 @@ private fun CalendarScreen(
 ) {
     val context = LocalContext.current
     var selectedDate by remember { mutableStateOf(currentDate()) }
-    val selected = debts
-        .filter { it.dueDate == selectedDate }
-        .sortedWith(compareBy<Debt> { statusPriority(it) }.thenByDescending { it.id })
-    val upcoming = debts
-        .filter {
-            val days = daysUntilDue(it.dueDate)
-            debtStatus(it) != "Pagado" && days != null && days in 0L..7L
+    var range by remember { mutableStateOf(AgendaRange.TODAY) }
+
+    val visible = debts
+        .filter { debt ->
+            if (debtStatus(debt) == "Pagado") return@filter false
+            when (range) {
+                AgendaRange.TODAY -> debt.dueDate == selectedDate
+                AgendaRange.WEEK -> {
+                    val days = daysBetween(selectedDate, debt.dueDate)
+                    days != null && days in 0L..6L
+                }
+                AgendaRange.MONTH -> sameMonthYear(selectedDate, debt.dueDate)
+            }
         }
-        .sortedBy { parseDateOrMax(it.dueDate) }
+        .sortedWith(compareBy<Debt> { statusPriority(it) }.thenBy { parseDateOrMax(it.dueDate) })
+
+    val total = visible.sumOf { remainingBalance(it) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(16.dp),
@@ -1951,21 +2129,53 @@ private fun CalendarScreen(
     ) {
         item {
             Text("Agenda de cobros", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            Text("Vencimientos y recordatorios", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Vencimientos por día, semana o mes", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AgendaRange.values().forEach { option ->
+                    if (range == option) {
+                        Button(
+                            onClick = { range = option },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(option.label) }
+                    } else {
+                        OutlinedButton(
+                            onClick = { range = option },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(option.label) }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(8.dp))
-            Button(
+            OutlinedButton(
                 onClick = { showDatePicker(context, selectedDate) { selectedDate = it } },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Fecha: $selectedDate")
+                Text("Fecha base: $selectedDate")
             }
         }
 
-        item { Text("Cobros del día", fontSize = 19.sp, fontWeight = FontWeight.Bold) }
-        if (selected.isEmpty()) {
-            item { EmptyCard("Sin vencimientos", "No hay cobros con vencimiento en esta fecha.") }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("${range.label}: ${visible.size} cobro(s)")
+                    Text(formatCurrency(total), fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        if (visible.isEmpty()) {
+            item { EmptyCard("Sin vencimientos", "No hay cobros en el período seleccionado.") }
         } else {
-            items(selected, key = { it.id }) { debt ->
+            items(visible, key = { it.id }) { debt ->
                 val client = clients.firstOrNull { it.id == debt.clientId }
                 DebtCard(
                     clientName = client?.name ?: "Cliente",
@@ -1973,22 +2183,6 @@ private fun CalendarScreen(
                     showActions = false,
                     onOpen = { onOpenDebt(debt) }
                 )
-            }
-        }
-
-        item { Text("Próximos 7 días", fontSize = 19.sp, fontWeight = FontWeight.Bold) }
-        if (upcoming.isEmpty()) {
-            item { Text("No hay vencimientos próximos.") }
-        } else {
-            items(upcoming, key = { it.id }) { debt ->
-                val client = clients.firstOrNull { it.id == debt.clientId }
-                Card(modifier = Modifier.fillMaxWidth().clickable { onOpenDebt(debt) }) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(client?.name ?: "Cliente", fontWeight = FontWeight.Bold)
-                        Text("${debt.dueDate} · ${debt.category}")
-                        Text(formatCurrency(remainingBalance(debt)))
-                    }
-                }
             }
         }
     }
@@ -2399,6 +2593,35 @@ private fun parseClientsCsv(raw: String): List<Client> {
 }
 
 
+private fun clientAccountStatus(debts: List<Debt>): String = when {
+    debts.any { debtStatus(it) == "Vencido" } -> "Vencido"
+    debts.any { debtStatus(it) == "Pendiente" } -> "Pendiente"
+    else -> "Al día"
+}
+
+private fun daysBetween(fromText: String, toText: String): Long? {
+    return try {
+        val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).apply { isLenient = false }
+        val from = formatter.parse(fromText) ?: return null
+        val to = formatter.parse(toText) ?: return null
+        (to.time - from.time) / 86_400_000L
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun sameMonthYear(baseText: String, otherText: String): Boolean {
+    return try {
+        val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).apply { isLenient = false }
+        val base = Calendar.getInstance().apply { time = formatter.parse(baseText) ?: return false }
+        val other = Calendar.getInstance().apply { time = formatter.parse(otherText) ?: return false }
+        base.get(Calendar.YEAR) == other.get(Calendar.YEAR) &&
+            base.get(Calendar.MONTH) == other.get(Calendar.MONTH)
+    } catch (_: Exception) {
+        false
+    }
+}
+
 private fun currentDate(): String {
     return SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date())
 }
@@ -2468,18 +2691,21 @@ private fun sharePaymentReceiptPdf(
     paymentAmount: Long
 ) {
     try {
+        val receiptNumber = "CP-${SimpleDateFormat("yyyyMMddHHmmss", Locale.getDefault()).format(Date())}"
         val pdf = PdfDocument()
         val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
         val page = pdf.startPage(pageInfo)
         val canvas = page.canvas
-        val paint = Paint().apply { textSize = 18f; isAntiAlias = true }
+        val paint = Paint().apply { textSize = 17f; isAntiAlias = true }
+        val small = Paint(paint).apply { textSize = 14f }
         val bold = Paint(paint).apply { isFakeBoldText = true; textSize = 24f }
 
-        var y = 70f
-        canvas.drawText(business.name, 50f, y, bold); y += 38f
-        canvas.drawText("COMPROBANTE DE ABONO", 50f, y, bold); y += 40f
+        var y = 60f
+        canvas.drawText(business.name, 50f, y, bold); y += 34f
+        canvas.drawText("COMPROBANTE DE ABONO", 50f, y, bold); y += 32f
+        canvas.drawText("N° $receiptNumber", 50f, y, small); y += 34f
 
-        val lines = listOf(
+        val lines = mutableListOf(
             "Fecha: ${currentDate()}",
             "Cliente: ${client?.name ?: "Cliente"}",
             "Concepto: ${debt.concept.ifBlank { debt.category }}",
@@ -2491,26 +2717,34 @@ private fun sharePaymentReceiptPdf(
         )
         lines.forEach {
             canvas.drawText(it, 50f, y, paint)
-            y += 32f
+            y += 30f
+        }
+
+        val paymentData = buildPaymentData(business)
+        if (paymentData.isNotBlank()) {
+            y += 12f
+            canvas.drawText("DATOS DE PAGO", 50f, y, Paint(paint).apply { isFakeBoldText = true })
+            y += 28f
+            paymentData.lines().filter { it.isNotBlank() }.forEach {
+                canvas.drawText(it, 50f, y, small)
+                y += 24f
+            }
         }
 
         y += 24f
-        canvas.drawText("Generado por CobrosPyme", 50f, y, paint)
+        canvas.drawText("Generado por CobrosPyme · $receiptNumber", 50f, y, small)
         pdf.finishPage(page)
 
         val dir = File(context.cacheDir, "comprobantes").apply { mkdirs() }
-        val file = File(dir, "abono_${debt.id}_${System.currentTimeMillis()}.pdf")
+        val file = File(dir, "comprobante_$receiptNumber.pdf")
         FileOutputStream(file).use { pdf.writeTo(it) }
         pdf.close()
 
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
             putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Comprobante $receiptNumber")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, "Compartir comprobante PDF"))
@@ -2535,12 +2769,12 @@ private fun openWhatsApp(context: Context, phone: String, message: String) {
 
 private fun buildPaymentData(business: BusinessSettings): String {
     return buildString {
-        if (business.bank.isNotBlank()) append("Banco: ${business.bank}\\n")
-        if (business.accountType.isNotBlank()) append("Cuenta: ${business.accountType}\\n")
-        if (business.accountNumber.isNotBlank()) append("N°: ${business.accountNumber}\\n")
-        if (business.holder.isNotBlank()) append("Titular: ${business.holder}\\n")
-        if (business.rut.isNotBlank()) append("RUT: ${business.rut}\\n")
-        if (business.paymentNotes.isNotBlank()) append("${business.paymentNotes}\\n")
+        if (business.bank.isNotBlank()) append("Banco: ${business.bank}\n")
+        if (business.accountType.isNotBlank()) append("Cuenta: ${business.accountType}\n")
+        if (business.accountNumber.isNotBlank()) append("N°: ${business.accountNumber}\n")
+        if (business.holder.isNotBlank()) append("Titular: ${business.holder}\n")
+        if (business.rut.isNotBlank()) append("RUT: ${business.rut}\n")
+        if (business.paymentNotes.isNotBlank()) append("${business.paymentNotes}\n")
     }.trim()
 }
 
@@ -2555,12 +2789,12 @@ private fun shareClientSummary(
     val overdue = debts.count { debtStatus(it) == "Vencido" }
 
     val text = buildString {
-        append("${business.name}\\n")
-        append("Resumen de cuenta - ${client.name}\\n\\n")
-        append("Pendiente: ${formatCurrency(pending)}\\n")
-        append("Pagado: ${formatCurrency(collected)}\\n")
-        append("Cobros vencidos: $overdue\\n")
-        append("Total de cobros: ${debts.size}\\n")
+        append("${business.name}\n")
+        append("Resumen de cuenta - ${client.name}\n\n")
+        append("Pendiente: ${formatCurrency(pending)}\n")
+        append("Pagado: ${formatCurrency(collected)}\n")
+        append("Cobros vencidos: $overdue\n")
+        append("Total de cobros: ${debts.size}\n")
     }
 
     shareText(context, "Resumen de ${client.name}", text)
@@ -2574,7 +2808,7 @@ private fun sharePaymentReceipt(
     paymentAmount: Long
 ) {
     val text = buildString {
-        append("${business.name}\\n")
+        append("${business.name}\n")
         append("COMPROBANTE DE ABONO\\n")
         append("--------------------------------\\n")
         append("Fecha: ${currentDate()}\\n")
@@ -2820,7 +3054,10 @@ private fun loadClients(context: Context): List<Client> {
                     phone = obj.optString("phone"),
                     email = obj.optString("email"),
                     address = obj.optString("address"),
-                    notes = obj.optString("notes")
+                    notes = obj.optString("notes"),
+                    rut = obj.optString("rut"),
+                    label = obj.optString("label"),
+                    colorTag = obj.optString("colorTag", "Verde")
                 )
             )
         }
@@ -2841,6 +3078,9 @@ private fun saveClients(context: Context, clients: List<Client>) {
                 .put("email", client.email)
                 .put("address", client.address)
                 .put("notes", client.notes)
+                .put("rut", client.rut)
+                .put("label", client.label)
+                .put("colorTag", client.colorTag)
         )
     }
 
@@ -2861,11 +3101,7 @@ private fun loadDebts(context: Context): List<Debt> {
             val obj = array.getJSONObject(i)
             val amount = obj.getLong("amount")
             val oldPaid = obj.optBoolean("paid", false)
-            val paidAmount = if (obj.has("paidAmount")) {
-                obj.optLong("paidAmount", 0L)
-            } else {
-                if (oldPaid) amount else 0L
-            }
+            val paidAmount = if (obj.has("paidAmount")) obj.optLong("paidAmount", 0L) else if (oldPaid) amount else 0L
 
             result.add(
                 Debt(
@@ -2875,7 +3111,10 @@ private fun loadDebts(context: Context): List<Debt> {
                     amount = amount,
                     paidAmount = paidAmount.coerceAtMost(amount),
                     dueDate = obj.optString("dueDate"),
-                    paid = oldPaid || paidAmount >= amount
+                    paid = oldPaid || paidAmount >= amount,
+                    category = obj.optString("category", "Otro"),
+                    reminderEnabled = obj.optBoolean("reminderEnabled", true),
+                    reminderDaysBefore = obj.optInt("reminderDaysBefore", 1)
                 )
             )
         }
@@ -2896,7 +3135,10 @@ private fun saveDebts(context: Context, debts: List<Debt>) {
                 .put("amount", debt.amount)
                 .put("paidAmount", debt.paidAmount)
                 .put("dueDate", debt.dueDate)
-                .put("paid", debt.paid || remainingBalance(debt) == 0L)
+                .put("paid", debt.paid)
+                .put("category", debt.category)
+                .put("reminderEnabled", debt.reminderEnabled)
+                .put("reminderDaysBefore", debt.reminderDaysBefore)
         )
     }
 
