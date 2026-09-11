@@ -11,8 +11,8 @@ android {
         applicationId = "cl.negociospyme.cobros"
         minSdk = 24
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.6.2"
+        versionCode = 7
+        versionName = "1.6.3"
     }
 
     buildFeatures {
