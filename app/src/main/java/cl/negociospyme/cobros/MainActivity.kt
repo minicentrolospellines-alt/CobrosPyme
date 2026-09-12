@@ -111,7 +111,7 @@ private const val KEY_BUSINESS = "business"
 private const val KEY_SECURITY_ENABLED = "security_enabled"
 private const val KEY_SECURITY_PIN = "security_pin_hash"
 private const val KEY_AUTO_BACKUP = "auto_backup"
-private const val APP_VERSION_LABEL = "v1.6.3"
+private const val APP_VERSION_LABEL = "v1.7.0"
 private const val FREE_DEBT_LIMIT = 10
 private const val ADMOB_BANNER_AD_UNIT_ID = "ca-app-pub-6312173292390227/5371329835"
 
@@ -183,11 +183,30 @@ class MainActivity : FragmentActivity() {
     private val unlockedState = mutableStateOf(false)
     private val openDebtIdState = mutableStateOf<Long?>(null)
     private val splashVisibleState = mutableStateOf(true)
+    private val proState = mutableStateOf(false)
+    private val monthlyPriceState = mutableStateOf("Mensual")
+    private val annualPriceState = mutableStateOf("Anual")
+    private lateinit var billingManager: CobrosBillingManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         MobileAds.initialize(this) { }
+
+        billingManager = CobrosBillingManager(
+            activity = this,
+            onProStateChanged = { isPro ->
+                runOnUiThread { proState.value = isPro }
+            },
+            onPricesChanged = { monthly, annual ->
+                runOnUiThread {
+                    monthlyPriceState.value = monthly?.let { "$it / mes" } ?: "Mensual"
+                    annualPriceState.value = annual?.let { "$it / año" } ?: "Anual"
+                }
+            }
+        )
+        billingManager.start()
+
         scheduleCobrosWorkers(this)
         requestNotificationPermissionIfNeeded()
         openDebtIdState.value = intent.getLongExtra("openDebtId", -1L).takeIf { it > 0L }
@@ -205,7 +224,13 @@ class MainActivity : FragmentActivity() {
                     unlockedState.value -> {
                         CobrosPymeApp(
                             openDebtId = openDebtIdState.value,
-                            onOpenDebtHandled = { openDebtIdState.value = null }
+                            onOpenDebtHandled = { openDebtIdState.value = null },
+                            isPro = proState.value,
+                            monthlyPrice = monthlyPriceState.value,
+                            annualPrice = annualPriceState.value,
+                            onBuyMonthly = { billingManager.buyMonthly() },
+                            onBuyAnnual = { billingManager.buyAnnual() },
+                            onRestorePurchases = { billingManager.restorePurchases(showMessage = true) }
                         )
                     }
                     else -> {
@@ -244,6 +269,13 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    override fun onDestroy() {
+        if (::billingManager.isInitialized) {
+            billingManager.close()
+        }
+        super.onDestroy()
+    }
+
     private fun showBiometricPrompt() {
         val executor = ContextCompat.getMainExecutor(this)
         val prompt = BiometricPrompt(
@@ -275,7 +307,13 @@ class MainActivity : FragmentActivity() {
 @Composable
 fun CobrosPymeApp(
     openDebtId: Long? = null,
-    onOpenDebtHandled: () -> Unit = {}
+    onOpenDebtHandled: () -> Unit = {},
+    isPro: Boolean = false,
+    monthlyPrice: String = "Mensual",
+    annualPrice: String = "Anual",
+    onBuyMonthly: () -> Unit = {},
+    onBuyAnnual: () -> Unit = {},
+    onRestorePurchases: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val clients = remember {
@@ -308,14 +346,18 @@ fun CobrosPymeApp(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        val availableSlots = (FREE_DEBT_LIMIT - debts.size).coerceAtLeast(0)
-        if (availableSlots > 0) {
-            val generated = generateRecurringDebts(debts.toList()).take(availableSlots)
-            if (generated.isNotEmpty()) {
-                debts.addAll(generated)
-                saveDebts(context, debts)
-            }
+    LaunchedEffect(isPro) {
+        val generatedAll = generateRecurringDebts(debts.toList())
+        val generated = if (isPro) {
+            generatedAll
+        } else {
+            val availableSlots = (FREE_DEBT_LIMIT - debts.size).coerceAtLeast(0)
+            generatedAll.take(availableSlots)
+        }
+
+        if (generated.isNotEmpty()) {
+            debts.addAll(generated)
+            saveDebts(context, debts)
         }
     }
 
@@ -351,7 +393,7 @@ fun CobrosPymeApp(
         }
 
         val totalDebts = debts.size
-        if (totalDebts >= FREE_DEBT_LIMIT) {
+        if (!isPro && totalDebts >= FREE_DEBT_LIMIT) {
             showUpgradeDialog = true
         } else {
             showDebtDialog = true
@@ -361,7 +403,7 @@ fun CobrosPymeApp(
     Scaffold(
         bottomBar = {
             Column {
-                if (screen == Screen.HOME || screen == Screen.SETTINGS) {
+                if (!isPro && (screen == Screen.HOME || screen == Screen.SETTINGS)) {
                     FreePlanBannerAd()
                 }
                 BottomMenu(
@@ -470,6 +512,12 @@ fun CobrosPymeApp(
             Screen.SETTINGS -> BusinessSettingsScreen(
                 modifier = Modifier.padding(innerPadding),
                 settings = business,
+                isPro = isPro,
+                monthlyPrice = monthlyPrice,
+                annualPrice = annualPrice,
+                onBuyMonthly = onBuyMonthly,
+                onBuyAnnual = onBuyAnnual,
+                onRestorePurchases = onRestorePurchases,
                 onSave = {
                     business = it
                     saveBusinessSettings(context, it)
@@ -559,7 +607,7 @@ fun CobrosPymeApp(
             onDismiss = { showDebtDialog = false },
             onSave = { clientId, concept, amount, dueDate, category, reminderEnabled, reminderDaysBefore, recurrence ->
                 val totalDebts = debts.size
-                if (totalDebts >= FREE_DEBT_LIMIT) {
+                if (!isPro && totalDebts >= FREE_DEBT_LIMIT) {
                     showDebtDialog = false
                     showUpgradeDialog = true
                     return@NewDebtDialog
@@ -603,8 +651,42 @@ fun CobrosPymeApp(
                 }
             },
             confirmButton = {
-                Button(onClick = { showUpgradeDialog = false }) {
-                    Text("Entendido")
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            showUpgradeDialog = false
+                            onBuyMonthly()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Pro mensual · $monthlyPrice")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showUpgradeDialog = false
+                            onBuyAnnual()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Pro anual · $annualPrice")
+                    }
+                    TextButton(
+                        onClick = {
+                            showUpgradeDialog = false
+                            onRestorePurchases()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Restaurar compra")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUpgradeDialog = false }) {
+                    Text("Ahora no")
                 }
             }
         )
@@ -2407,6 +2489,12 @@ private fun CalendarScreen(
 private fun BusinessSettingsScreen(
     modifier: Modifier,
     settings: BusinessSettings,
+    isPro: Boolean,
+    monthlyPrice: String,
+    annualPrice: String,
+    onBuyMonthly: () -> Unit,
+    onBuyAnnual: () -> Unit,
+    onRestorePurchases: () -> Unit,
     onSave: (BusinessSettings) -> Unit,
     onBackup: () -> Unit,
     onImport: () -> Unit,
@@ -2452,6 +2540,54 @@ private fun BusinessSettingsScreen(
         item {
             Text("Ajustes", fontSize = 28.sp, fontWeight = FontWeight.Bold)
             Text("Negocio, mensajes, seguridad y respaldo", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isPro) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        if (isPro) "CobrosPyme Pro ✓" else "Plan Gratis",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp
+                    )
+                    if (isPro) {
+                        Text("Cobros ilimitados · Sin publicidad · Funciones Pro activadas")
+                    } else {
+                        Text("Hasta $FREE_DEBT_LIMIT cobros. Pasa a Pro para eliminar el límite y la publicidad.")
+                        Button(
+                            onClick = onBuyMonthly,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Pro mensual · $monthlyPrice")
+                        }
+                        OutlinedButton(
+                            onClick = onBuyAnnual,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Pro anual · $annualPrice")
+                        }
+                    }
+                    TextButton(
+                        onClick = onRestorePurchases,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Restaurar compras")
+                    }
+                }
+            }
         }
 
         item { OutlinedTextField(name, { name = it; saved = false }, modifier = Modifier.fillMaxWidth(), label = { Text("Nombre del negocio") }) }
@@ -2597,7 +2733,7 @@ private fun BusinessSettingsScreen(
                 Column(Modifier.padding(14.dp)) {
                     Text("Automatización", fontWeight = FontWeight.Bold)
                     Text("La app revisa vencimientos en segundo plano y mantiene un respaldo local automático diario.")
-                    Text("La nube y el plan mensual quedan para la etapa con servidor/backend.")
+                    Text("El Plan Pro se valida con Google Play Billing. La nube/multiusuario quedará para la etapa con backend.")
                 }
             }
         }
