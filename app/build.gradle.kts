@@ -11,8 +11,8 @@ android {
         applicationId = "cl.negociospyme.cobros"
         minSdk = 24
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.6.3"
+        versionCode = 8
+        versionName = "1.7.0"
     }
 
     buildFeatures {
@@ -26,6 +26,7 @@ android {
 }
 
 dependencies {
+    implementation("com.android.billingclient:billing:9.1.0")
     implementation("com.google.android.gms:play-services-ads:25.4.0")
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
